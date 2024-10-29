@@ -3,7 +3,7 @@ package sdl
 import (
 	"fmt"
 	"unsafe"
-	
+
 	"github.com/veandco/go-sdl2/sdl"
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -90,7 +90,7 @@ func (w *Window) FlipPixel(x, y int) {
 
 func (w *Window) CountPixels() int {
 	count := 0
-	for i := 0; i < int(w.Width) * int(w.Height) * 4; i += 4 {
+	for i := 0; i < int(w.Width)*int(w.Height)*4; i += 4 {
 		if w.pixels[i] == 0xFF {
 			count++
 		}
