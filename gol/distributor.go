@@ -1,6 +1,11 @@
 package gol
 
-import "uk.ac.bris.cs/gameoflife/util"
+import (
+	"fmt"
+	"sync"
+
+	"uk.ac.bris.cs/gameoflife/util"
+)
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -34,52 +39,100 @@ type distributorChannels struct {
 // }
 // distributor divides the work between workers and interacts with other goroutines.
 // distributor divides the work between workers and interacts with other goroutines.
-func distributor(p Params, c distributorChannels) {
-	// 创建一个 2D 切片来存储当前状态的世界
+
+func initializeWorld(p Params, c distributorChannels) [][]uint8 {
+	filename := fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
+	c.ioCommand <- ioInput
+	c.ioFilename <- filename
+
 	world := make([][]uint8, p.ImageHeight)
 	for i := range world {
 		world[i] = make([]uint8, p.ImageWidth)
+		for j := range world[i] {
+			world[i][j] = <-c.ioInput
+		}
 	}
 
+	fmt.Println("initializeworld successful")
+	return world
+}
+
+func computeSection(startY, endY int, world [][]uint8, newWorld [][]uint8, width, height int, wg *sync.WaitGroup, c distributorChannels, turn int) {
+	defer wg.Done()
+	for y := startY; y < endY; y++ {
+		for x := 0; x < width; x++ {
+			aliveNeighbors := countAliveNeighbors(world, x, y, width, height)
+			if world[y][x] == 255 {
+				if aliveNeighbors < 2 || aliveNeighbors > 3 {
+					newWorld[y][x] = 0 // 死亡
+					c.events <- CellFlipped{CompletedTurns: turn, Cell: util.Cell{X: x, Y: y}}
+				} else {
+					newWorld[y][x] = 255 // 保持活
+				}
+			} else if aliveNeighbors == 3 {
+				newWorld[y][x] = 255 // 复活
+				c.events <- CellFlipped{CompletedTurns: turn, Cell: util.Cell{X: x, Y: y}}
+			} else {
+				newWorld[y][x] = 0 // 保持死
+			}
+		}
+	}
+}
+
+func writeNewWorld(world [][]uint8, turn int, p Params, c distributorChannels) {
+	filename := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
+	c.ioCommand <- ioOutput
+	c.ioFilename <- filename
+
+	for y := 0; y < p.ImageHeight; y++ {
+		for x := 0; x < p.ImageWidth; x++ {
+			c.ioOutput <- world[y][x]
+		}
+	}
+
+	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename}
+}
+
+func distributor(p Params, c distributorChannels) {
+	// 创建一个 2D 切片来存储当前状态的世界
+	world := initializeWorld(p, c)
 	turn := 0
+	c.events <- CellsFlipped{CompletedTurns: turn, Cells: getAliveCells(world, p.ImageWidth, p.ImageHeight)}
 	c.events <- StateChange{turn, Executing}
+	writeNewWorld(world, turn, p, c)
 
 	// 执行所有的生命游戏的回合数
 	for turn < p.Turns {
+		turn++
+
+		var wg sync.WaitGroup
 		newWorld := make([][]uint8, p.ImageHeight)
 		for i := range newWorld {
 			newWorld[i] = make([]uint8, p.ImageWidth)
 		}
 
-		// 更新当前回合的状态
-		for y := 0; y < p.ImageHeight; y++ {
-			for x := 0; x < p.ImageWidth; x++ {
-				aliveNeighbors := countAliveNeighbors(world, x, y, p.ImageWidth, p.ImageHeight)
-				if world[y][x] == 255 {
-					// 活细胞规则
-					if aliveNeighbors < 2 || aliveNeighbors > 3 {
-						newWorld[y][x] = 0 // 死亡
-					} else {
-						newWorld[y][x] = 255 // 保持活着
-					}
-				} else {
-					// 死细胞规则
-					if aliveNeighbors == 3 {
-						newWorld[y][x] = 255 // 复活
-					} else {
-						newWorld[y][x] = 0
-					}
-				}
+		// 分块并发处理
+		rowsPerThread := p.ImageHeight / p.Threads
+		for t := 0; t < p.Threads; t++ {
+			startY := t * rowsPerThread
+			endY := (t + 1) * rowsPerThread
+			if t == p.Threads-1 {
+				endY = p.ImageHeight
 			}
+			wg.Add(1)
+			go computeSection(startY, endY, world, newWorld, p.ImageWidth, p.ImageHeight, &wg, c, turn)
 		}
 
-		world = newWorld
-		turn++
-		c.events <- TurnComplete{turn}
+		// 等待所有线程完成
+		wg.Wait()
 
+		//newWorld := computeNewWorld(world, turn, p, c)
+		writeNewWorld(newWorld, turn, p, c)
 		// 每个回合结束后发送 `AliveCellsCount` 事件
-		aliveCells := countAliveCells(world, p.ImageWidth, p.ImageHeight)
+		aliveCells := countAliveCells(newWorld, p.ImageWidth, p.ImageHeight)
 		c.events <- AliveCellsCount{CompletedTurns: turn, CellsCount: aliveCells}
+		c.events <- TurnComplete{turn}
+		world = newWorld
 	}
 
 	// 获取所有活细胞的坐标并转换为 []util.Cell

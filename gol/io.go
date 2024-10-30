@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
@@ -87,7 +88,7 @@ func (io *ioState) writePgmImage() {
 
 // readPgmImage opens a pgm file and sends its data as an array of bytes.
 func (io *ioState) readPgmImage() {
-
+	fmt.Println("start read pgm file")
 	// Request a filename from the distributor.
 	filename := <-io.channels.filename
 
@@ -116,7 +117,6 @@ func (io *ioState) readPgmImage() {
 	}
 
 	image := []byte(fields[4])
-
 	for _, b := range image {
 		io.channels.input <- b
 	}

@@ -62,6 +62,8 @@ func (w *Window) RenderFrame() {
 	err = w.renderer.Copy(w.texture, nil, nil)
 	util.Check(err)
 	w.renderer.Present()
+	// w.renderer.SetDrawColor(color, color, color, 255)
+	// w.renderer.DrawPoint(int32(x), int32(y))
 }
 
 func (w *Window) PollEvent() sdl.Event {
