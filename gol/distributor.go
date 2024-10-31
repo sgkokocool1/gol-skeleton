@@ -90,51 +90,86 @@ func writeNewWorld(world [][]uint8, turn int, p Params, c distributorChannels) {
 		}
 	}
 
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle // 等待接收 ioIdle 信号，确认 IO 空闲
+
 	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename}
 }
 
-func distributor(p Params, c distributorChannels) {
+func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	// 创建一个 2D 切片来存储当前状态的世界
 	world := initializeWorld(p, c)
 	turn := 0
+	paused := false // 表示当前是否处于暂停状态
+
 	c.events <- CellsFlipped{CompletedTurns: turn, Cells: getAliveCells(world, p.ImageWidth, p.ImageHeight)}
 	c.events <- StateChange{turn, Executing}
-	writeNewWorld(world, turn, p, c)
+	// writeNewWorld(world, turn, p, c)
 
 	// 执行所有的生命游戏的回合数
+turnLoop:
 	for turn < p.Turns {
-		turn++
+		// 检查按键事件
+		select {
+		case key := <-keyPresses:
+			if key == 's' {
+				fmt.Printf("sssssssssssssssss,turn: %d\n", turn)
 
-		var wg sync.WaitGroup
-		newWorld := make([][]uint8, p.ImageHeight)
-		for i := range newWorld {
-			newWorld[i] = make([]uint8, p.ImageWidth)
-		}
-
-		// 分块并发处理
-		rowsPerThread := p.ImageHeight / p.Threads
-		for t := 0; t < p.Threads; t++ {
-			startY := t * rowsPerThread
-			endY := (t + 1) * rowsPerThread
-			if t == p.Threads-1 {
-				endY = p.ImageHeight
+				writeNewWorld(world, turn, p, c)
 			}
-			wg.Add(1)
-			go computeSection(startY, endY, world, newWorld, p.ImageWidth, p.ImageHeight, &wg, c, turn)
+			if key == 'p' {
+				fmt.Printf("pppppppppppppppp,turn: %d\n", turn)
+				paused = !paused
+				if paused {
+					c.events <- StateChange{turn, Paused}
+				} else {
+					c.events <- StateChange{turn, Executing}
+				}
+			}
+			if key == 'q' {
+				fmt.Printf("qqqqqqqqqqqqqq,turn: %d\n", turn)
+				break turnLoop
+			}
+		default:
+			// 没有按键按下时继续游戏逻辑
+			if paused {
+				continue // 继续等待，直到不再暂停
+			}
+
+			turn++
+			// 执行多线程并行计算
+			var wg sync.WaitGroup
+			newWorld := make([][]uint8, p.ImageHeight)
+			for i := range newWorld {
+				newWorld[i] = make([]uint8, p.ImageWidth)
+			}
+
+			// 分块并发处理
+			rowsPerThread := p.ImageHeight / p.Threads
+			for t := 0; t < p.Threads; t++ {
+				startY := t * rowsPerThread
+				endY := (t + 1) * rowsPerThread
+				if t == p.Threads-1 {
+					endY = p.ImageHeight
+				}
+				wg.Add(1)
+				go computeSection(startY, endY, world, newWorld, p.ImageWidth, p.ImageHeight, &wg, c, turn)
+			}
+
+			// 等待所有线程完成
+			wg.Wait()
+
+			// newWorld := computeNewWorld(world, turn, p, c)
+			// writeNewWorld(newWorld, turn, p, c)
+			// 每个回合结束后发送 `AliveCellsCount` 事件
+			aliveCells := countAliveCells(newWorld, p.ImageWidth, p.ImageHeight)
+			c.events <- AliveCellsCount{CompletedTurns: turn, CellsCount: aliveCells}
+			c.events <- TurnComplete{turn}
+			world = newWorld
 		}
-
-		// 等待所有线程完成
-		wg.Wait()
-
-		//newWorld := computeNewWorld(world, turn, p, c)
-		writeNewWorld(newWorld, turn, p, c)
-		// 每个回合结束后发送 `AliveCellsCount` 事件
-		aliveCells := countAliveCells(newWorld, p.ImageWidth, p.ImageHeight)
-		c.events <- AliveCellsCount{CompletedTurns: turn, CellsCount: aliveCells}
-		c.events <- TurnComplete{turn}
-		world = newWorld
 	}
 
+	writeNewWorld(world, turn, p, c)
 	// 获取所有活细胞的坐标并转换为 []util.Cell
 	aliveCells := getAliveCells(world, p.ImageWidth, p.ImageHeight)
 	// 发送最终状态报告
