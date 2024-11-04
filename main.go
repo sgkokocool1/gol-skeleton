@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"runtime"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,7 +13,7 @@ import (
 
 // main is the function called when starting Game of Life with 'go run .'
 func main() {
-	runtime.LockOSThread()
+	//runtime.LockOSThread()
 	var params gol.Params
 
 	flag.IntVar(
@@ -26,19 +25,19 @@ func main() {
 	flag.IntVar(
 		&params.ImageWidth,
 		"w",
-		512,
+		16,
 		"Specify the width of the image. Defaults to 512.")
 
 	flag.IntVar(
 		&params.ImageHeight,
 		"h",
-		512,
+		16,
 		"Specify the height of the image. Defaults to 512.")
 
 	flag.IntVar(
 		&params.Turns,
 		"turns",
-		10000000000,
+		1,
 		"Specify the number of turns to process. Defaults to 10000000000.")
 
 	headless := flag.Bool(
