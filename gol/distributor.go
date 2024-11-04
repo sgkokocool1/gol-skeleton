@@ -81,7 +81,7 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 		istop, isbottom := true, true
 		startRow := i * rowPerWorker
 		endRow := startRow + rowPerWorker
-		subGrid := world[startRow : endRow-1]
+		subGrid := world[startRow:endRow]
 		workerAddr := p.Workers[i]
 		fmt.Printf("start: %d; end: %d; addr: %s\n", startRow, endRow, workerAddr)
 		wg.Add(1)
