@@ -2,8 +2,10 @@ package gol
 
 import (
 	"fmt"
+	"math"
 	"net/rpc"
 	"sync"
+	"time"
 
 	"uk.ac.bris.cs/gameoflife/util"
 )
@@ -78,7 +80,6 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	var wg sync.WaitGroup
 	rowPerWorker := p.ImageHeight / len(p.Workers)
 	for i := 0; i < len(p.Workers); i++ {
-		istop, isbottom := true, true
 		startRow := i * rowPerWorker
 		endRow := startRow + rowPerWorker
 		subGrid := world[startRow:endRow]
@@ -99,19 +100,17 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			haloBottom := world[0]
 			if startRow > 0 {
 				haloTop = world[startRow-1]
-				istop = false
 			}
 			if endRow < p.ImageHeight {
 				haloBottom = world[endRow]
-				isbottom = false
 			}
 			req := GridRequest{
-				Istop:      istop,
-				Isbottom:   isbottom,
 				HaloTop:    haloTop,
 				HaloBottom: haloBottom,
 				Iterations: p.Turns,
 				SubGrid:    subGrid,
+				StartRow:   startRow,
+				EndRow:     endRow,
 			}
 
 			var res GridResponse
@@ -126,6 +125,26 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			}
 		}(workerAddr, startRow, endRow)
 	}
+
+	done := make(chan struct{}) // 用于通知 goroutine 退出
+
+	go func() {
+		//time.Sleep(2 * time.Second)
+		loopTimer := time.NewTicker(time.Second * 2)
+		defer loopTimer.Stop()
+
+		for {
+			select {
+			case <-done: // 当收到 done 信号时退出循环
+				fmt.Println("Received exit signal, exiting loop...")
+				return
+			case <-loopTimer.C:
+				alives, aturn := getAllAliveCells(p.Workers, p.Turns)
+				c.events <- AliveCellsCount{CompletedTurns: aturn, CellsCount: alives}
+			}
+		}
+	}()
+
 	wg.Wait()
 
 	for _, row := range world {
@@ -145,6 +164,40 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 
 	c.events <- StateChange{turn, Quitting}
 
+	close(done)
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
+}
+
+func getAllAliveCells(workers []string, turn int) (int, int) {
+	count := 0
+	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
+	worksAlice := make(map[int]map[int]int)
+
+	for i := 0; i < len(workers); i++ {
+		client, err := rpc.Dial("tcp", workers[i])
+		if err != nil {
+			panic(err)
+		}
+		defer client.Close()
+
+		req := AliveRequest{}
+		var res AliveResponse
+
+		err = client.Call("GolService.GetAliveCells", req, &res)
+		if err != nil {
+			panic(err)
+		}
+
+		worksAlice[i] = res.CountMap
+		if res.Latest < minValue {
+			minValue = res.Latest
+		}
+	}
+
+	for _, v := range worksAlice {
+		count += v[minValue]
+	}
+
+	return count, minValue
 }

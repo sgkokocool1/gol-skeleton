@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
-	"sync"
 )
 
 type Params struct {
@@ -23,25 +22,24 @@ func main() {
 	flag.StringVar(
 		&params.NeighborTop,
 		"t",
-		"",
+		"127.0.0.1:1234",
 		"Specify the NeighborTop of worker . Defaults to null.")
 
 	flag.StringVar(
 		&params.NeighborBottom,
 		"b",
-		"127.0.0.1:1235",
+		"127.0.0.1:1234",
+		// "",
 		"Specify the NeighborBottom of worker . Defaults to 1235.")
 
 	flag.Parse()
 
-	var topMap, bottomMap sync.Map
+	// var topMap, bottomMap sync.Map
 	golService := &GolService{
 		NeighborTop:    params.NeighborTop,
 		NeighborBottom: params.NeighborBottom,
-		// TopHaloChan:    make(chan HaloRequest),
-		// BottomHaloChan: make(chan HaloRequest),
-		TopMap:    topMap,
-		BottomMap: bottomMap,
+		TopHaloChan:    make(chan HaloRequest),
+		BottomHaloChan: make(chan HaloRequest),
 	}
 
 	rpc.Register(golService)

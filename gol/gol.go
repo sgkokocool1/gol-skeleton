@@ -1,10 +1,16 @@
 package gol
 
 type GridRequest struct {
-	Istop, Isbottom     bool
 	HaloTop, HaloBottom []uint8
 	Iterations          int
 	SubGrid             [][]uint8
+	StartRow, EndRow    int
+}
+
+type AliveRequest struct{}
+type AliveResponse struct {
+	CountMap map[int]int
+	Latest   int
 }
 
 type GridResponse struct {
@@ -43,9 +49,9 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 		input:    ioInput,
 	}
 
-	p.Workers = make([]string, 2)
+	p.Workers = make([]string, 1)
 	p.Workers[0] = "127.0.0.1:1234"
-	p.Workers[1] = "127.0.0.1:1235"
+	//p.Workers[1] = "127.0.0.1:1235"
 
 	go startIo(p, ioChannels)
 

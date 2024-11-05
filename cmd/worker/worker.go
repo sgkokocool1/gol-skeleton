@@ -3,11 +3,18 @@ package main
 import (
 	"fmt"
 	"net/rpc"
-	"sync"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/gol"
 )
+
+type AliveCount struct {
+	Count  map[int]int
+	Latest int
+}
+
+var countMap = make(map[int]int)
+var aliveCount AliveCount = AliveCount{Count: countMap, Latest: 0}
 
 // 光环数据的 RPC 请求和响应结构
 type HaloRequest struct {
@@ -21,8 +28,15 @@ type HaloResponse struct {
 type GolService struct {
 	NeighborTop    string
 	NeighborBottom string
-	TopMap         sync.Map
-	BottomMap      sync.Map
+	TopHaloChan    chan HaloRequest
+	BottomHaloChan chan HaloRequest
+}
+
+func (s *GolService) GetAliveCells(req *gol.AliveRequest, res *gol.AliveResponse) error {
+	// 模拟存活单元计数
+	res.CountMap = aliveCount.Count
+	res.Latest = aliveCount.Latest
+	return nil
 }
 
 // sendHalo 发送光环数据，并在 HaloRequest 中附加当前的迭代步数。
@@ -55,71 +69,62 @@ func (s *GolService) sendHalo(haloData []uint8, iter int, neighborAddr string, i
 // 接收光环数据的 RPC 方法，放入对应通道
 func (s *GolService) ReceiveTopHalo(req HaloRequest, res *HaloResponse) error {
 	fmt.Printf("time:%v; recive top halo; turn:%d\n", time.Now(), req.Iteration)
-
-	s.TopMap.Store(req.Iteration, req.HaloData)
-	//s.TopHaloChan <- req
+	s.TopHaloChan <- req
 	*res = HaloResponse{Success: true}
 	return nil
 }
 
 func (s *GolService) ReceiveBottomHalo(req HaloRequest, res *HaloResponse) error {
 	fmt.Printf("time:%v; recive bot halo; turn:%d\n", time.Now(), req.Iteration)
-	//s.BottomHaloChan <- req
-	s.BottomMap.Store(req.Iteration, req.HaloData)
+	s.BottomHaloChan <- req
 	*res = HaloResponse{Success: true}
 	return nil
 }
 
 // 接收特定迭代的光环数据
-func (s *GolService) receiveHalo(iter int, isTop bool) ([]uint8, bool) {
+func (s *GolService) receiveHalo(iter int, isTop bool) []uint8 {
 	fmt.Printf("time:%v; istop:%v; turn: %d\n", time.Now(), isTop, iter)
 
 	if isTop {
 
-		val, ok := s.TopMap.Load(iter)
-		if ok {
-			return val.([]uint8), true
+		for req := range s.TopHaloChan {
+			fmt.Printf("time:%v; recive top turn: %d\n", time.Now(), req.Iteration)
+			if req.Iteration == iter {
+				return req.HaloData
+			}
 		}
-
-		return []uint8{}, false
-		// for req := range s.TopHaloChan {
-		// 	fmt.Printf("time:%v; recive top turn: %d\n", time.Now(), req.Iteration)
-		// 	if req.Iteration == iter {
-		// 		return req.HaloData
-		// 	}
-		// }
 	} else {
 
-		val, ok := s.BottomMap.Load(iter)
-		if ok {
-			return val.([]uint8), true
+		for req := range s.BottomHaloChan {
+			fmt.Printf("time:%v; recive bot turn: %d\n", time.Now(), req.Iteration)
+			if req.Iteration == iter {
+				return req.HaloData
+			}
 		}
-		return []uint8{}, false
-		// for req := range s.BottomHaloChan {
-		// 	fmt.Printf("time:%v; recive bot turn: %d\n", time.Now(), req.Iteration)
-		// 	if req.Iteration == iter {
-		// 		return req.HaloData
-		// 	}
-		// }
 	}
+
+	return []uint8{}
 }
 
 func (s *GolService) ComputeGrid(req gol.GridRequest, res *gol.GridResponse) error {
 	fmt.Println("recive 1234")
-	subGrid := req.SubGrid
+	iter := 0
+	grid := req.SubGrid
 	topHalo := req.HaloTop
 	bottomHalo := req.HaloBottom
 
-	for iter := 0; iter < req.Iterations; iter++ {
+	for iter < req.Iterations {
+		iter++
+
 		// 迭代并更新子网格
-		newSubGrid := make([][]uint8, len(subGrid))
+		newSubGrid := make([][]uint8, len(grid))
 		for i := range newSubGrid {
-			newSubGrid[i] = make([]uint8, len(subGrid[i]))
+			newSubGrid[i] = make([]uint8, len(grid[i]))
 		}
-		for i := 0; i < len(subGrid); i++ {
-			for j := 0; j < len(subGrid[i]); j++ {
-				aliveNeighbors := countAliveNeighbors(subGrid, i, j, topHalo, bottomHalo)
-				if subGrid[i][j] == 255 {
+		for i := 0; i < len(grid); i++ {
+			for j := 0; j < len(grid[i]); j++ {
+				aliveNeighbors := countAliveNeighbors(grid, i, j, topHalo, bottomHalo)
+				if grid[i][j] == 255 {
 					if aliveNeighbors < 2 || aliveNeighbors > 3 {
 						newSubGrid[i][j] = 0
 					} else {
@@ -130,40 +135,34 @@ func (s *GolService) ComputeGrid(req gol.GridRequest, res *gol.GridResponse) err
 				}
 			}
 		}
-		subGrid = newSubGrid
+		grid = newSubGrid
+		aliveCount.Count[iter] = countAliveCells(newSubGrid)
+		aliveCount.Latest = iter
 
 		// 发送当前迭代的光环数据到邻居节点
-		go s.sendHalo(subGrid[0], iter, s.NeighborTop, true)
-		go s.sendHalo(subGrid[len(subGrid)-1], iter, s.NeighborBottom, false)
+		go s.sendHalo(grid[0], iter, s.NeighborTop, true)
+		go s.sendHalo(grid[len(grid)-1], iter, s.NeighborBottom, false)
 
 		// 阻塞，等待接收来自邻居的光环数据
-		if !req.Istop {
-			for i := 0; i < 5; i++ {
-				v, ok := s.receiveHalo(iter, true)
-				if ok {
-					topHalo = v
-				} else {
-					time.Sleep(1 * time.Second)
-				}
-			}
-		}
-
-		if !req.Isbottom {
-			for i := 0; i < 5; i++ {
-				v, ok := s.receiveHalo(iter, false)
-				if ok {
-					bottomHalo = v
-				} else {
-					time.Sleep(1 * time.Second)
-				}
-			}
-		}
-
+		topHalo = s.receiveHalo(iter, true)
+		bottomHalo = s.receiveHalo(iter, false)
 		fmt.Printf("time:%v; top:%v; bot:%v; turn: %d\n", time.Now(), topHalo, bottomHalo, iter)
 	}
 
-	res.GridPart = subGrid
+	res.GridPart = grid
 	return nil
+}
+
+func countAliveCells(world [][]uint8) int {
+	alive := 0
+	for i := 0; i < len(world); i++ {
+		for j := 0; j < len(world[i]); j++ {
+			if world[i][j] == 255 {
+				alive++
+			}
+		}
+	}
+	return alive
 }
 
 // 计算活邻居数量的辅助函数
