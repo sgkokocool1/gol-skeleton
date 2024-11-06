@@ -22,7 +22,6 @@ type Params struct {
 	Threads     int
 	ImageWidth  int
 	ImageHeight int
-	Workers     StringSlice
 }
 
 // Run starts the processing of Game of Life. It should initialise channels and goroutines.
@@ -44,10 +43,6 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 		input:    ioInput,
 	}
 
-	if len(p.Workers) == 0 {
-		p.Workers = append(p.Workers, "127.0.0.1:1234")
-	}
-
 	go startIo(p, ioChannels)
 
 	distributorChannels := distributorChannels{
@@ -57,6 +52,7 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 		ioFilename: ioFilename,
 		ioOutput:   ioOutput,
 		ioInput:    ioInput,
+		ioKeyPress: keyPresses,
 	}
-	distributor(p, distributorChannels, keyPresses)
+	distributor(p, distributorChannels)
 }

@@ -15,7 +15,6 @@ import (
 func main() {
 	//runtime.LockOSThread()
 	var params gol.Params
-	params.Workers = append(params.Workers, "127.0.0.1:1234")
 
 	flag.IntVar(
 		&params.Threads,
@@ -40,8 +39,6 @@ func main() {
 		"turns",
 		1000,
 		"Specify the number of turns to process. Defaults to 10000000000.")
-
-	flag.Var(&params.Workers, "workers", "A list of workers ip and port 127.0.0.1:8083")
 
 	headless := flag.Bool(
 		"headless",

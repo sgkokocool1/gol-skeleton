@@ -2,10 +2,10 @@ package gol
 
 import (
 	"fmt"
-	"math"
+	"net"
 	"net/rpc"
 	"os"
-	"sync"
+	"strconv"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/stubs"
@@ -19,334 +19,201 @@ type distributorChannels struct {
 	ioFilename chan<- string
 	ioOutput   chan<- uint8
 	ioInput    <-chan uint8
+	ioKeyPress <-chan rune
 }
 
-func initializeWorld(p Params, c distributorChannels) [][]uint8 {
-	filename := fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
-	c.ioCommand <- ioInput
-	c.ioFilename <- filename
+var (
+	distributorRegistered bool
+	channels              distributorChannels
+)
 
-	world := make([][]uint8, p.ImageHeight)
-	for i := range world {
-		world[i] = make([]uint8, p.ImageWidth)
-		for j := range world[i] {
-			world[i][j] = <-c.ioInput
-		}
+type Distributor struct{}
+
+func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) [][]uint8 {
+	ticker := time.NewTicker(2 * time.Second)
+	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
+	// client, _ := rpc.Dial("tcp", "local_ip:8083")
+	defer client.Close()
+	request := stubs.Request{
+		World: initialWorld,
+		Params: stubs.Params{
+			Turns:       p.Turns,
+			Threads:     p.Threads, // just for testing purposes
+			ImageWidth:  p.ImageWidth,
+			ImageHeight: p.ImageHeight,
+		},
 	}
+	response := new(stubs.Response)
+	done := client.Go(stubs.BrokerHandler, request, response, nil)
 
-	fmt.Println("initializeworld successful")
-	return world
-}
-
-// getAliveCells 提取世界中活细胞的坐标，返回一个 []util.Cell 切片
-func getAliveCells(world [][]uint8, width, height int) []util.Cell {
-	var cells []util.Cell
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			if world[y][x] == 255 {
-				cells = append(cells, util.Cell{X: x, Y: y})
-			}
-		}
-	}
-	return cells
-}
-
-func writeNewWorld(world [][]uint8, turn int, p Params, c distributorChannels) {
-	filename := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
-	c.ioCommand <- ioOutput
-	c.ioFilename <- filename
-
-	for y := 0; y < p.ImageHeight; y++ {
-		for x := 0; x < p.ImageWidth; x++ {
-			c.ioOutput <- world[y][x]
-		}
-	}
-
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle // 等待接收 ioIdle 信号，确认 IO 空闲
-
-	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename}
-}
-
-// distributor divides the work between workers and interacts with other goroutines.
-func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
-
-	// TODO: Create a 2D slice to store the world.
-	world := initializeWorld(p, c)
-	turn := 0
-	paused := false // 表示当前是否处于暂停状态
-	c.events <- CellsFlipped{CompletedTurns: turn, Cells: getAliveCells(world, p.ImageWidth, p.ImageHeight)}
-	c.events <- StateChange{turn, Executing}
-
-	// TODO: Execute all turns of the Game of Life.
-	var wg sync.WaitGroup
-	rowPerWorker := p.ImageHeight / len(p.Workers)
-	for i := 0; i < len(p.Workers); i++ {
-		startRow := i * rowPerWorker
-		endRow := startRow + rowPerWorker
-		subGrid := world[startRow:endRow]
-		workerAddr := p.Workers[i]
-		fmt.Printf("start: %d; end: %d; addr: %s\n", startRow, endRow, workerAddr)
-		wg.Add(1)
-
-		go func(workerAddr string, startRow, endRow int) {
-			defer wg.Done()
-
-			client, err := rpc.Dial("tcp", workerAddr)
+	for {
+		select {
+		case <-done.Done:
+			ticker.Stop()
+			return response.World
+		case <-ticker.C:
+			request := stubs.BlankRequest{}
+			response := new(stubs.CurrentStateResponse)
+			err := client.Call(stubs.GetCurrentState, request, response)
 			if err != nil {
-				panic(err)
+				fmt.Printf("Error GetCurrentState -> %s", err.Error())
+				os.Exit(1)
 			}
-			defer client.Close()
+			c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
 
-			haloTop := world[p.ImageHeight-1]
-			haloBottom := world[0]
-			if startRow > 0 {
-				haloTop = world[startRow-1]
-			}
-			if endRow < p.ImageHeight {
-				haloBottom = world[endRow]
-			}
+		case key := <-c.ioKeyPress:
+			switch string(key) {
+			case "s":
+				// NOTE: generate a PGM file of the current state
+				request := stubs.BlankRequest{}
+				response := new(stubs.CurrentStateResponse)
+				err := client.Call(stubs.GetCurrentState, request, response)
+				if err != nil {
+					fmt.Printf("Error GetCurrentState -> %s", err.Error())
+					os.Exit(1)
+				}
+				writeImage(p, c, response.Turn, response.CurrentWorld)
+			case "q":
+				// NOTE: close the client and reset the broker
+				keyRequest := stubs.KeyRequest{Key: "q"}
+				keyResponse := new(stubs.CurrentStateResponse)
+				keyError := client.Call(stubs.HandleKey, keyRequest, keyResponse)
+				if keyError != nil {
+					fmt.Printf("Error HandleKey -> %s", keyError.Error())
+					os.Exit(1)
+				}
+				writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
+				c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
+				close(c.events)
 
-			req := stubs.ComputeGridRequest{
-				HaloTop:    haloTop,
-				HaloBottom: haloBottom,
-				Iterations: p.Turns,
-				SubGrid:    subGrid,
-				StartRow:   startRow,
-				EndRow:     endRow,
-			}
-			response := new(stubs.ComputeGridResponse)
-			client.Call(stubs.GoLWorkerComputeGridHandler, req, response)
+				time.Sleep(500 * time.Millisecond)
+				os.Exit(0)
+			case "k":
+				// NOTE: get the current state
+				keyRequest := stubs.KeyRequest{Key: "q"}
+				keyResponse := new(stubs.CurrentStateResponse)
+				keyError := client.Call(stubs.HandleKey, keyRequest, keyResponse)
+				if keyError != nil {
+					fmt.Printf("Error HandleKey -> %s", keyError.Error())
+					os.Exit(1)
+				}
+				writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
+				c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
+				close(c.events)
 
-			// 合并结果
-			for row := range response.GridPart {
-				world[startRow+row] = response.GridPart[row]
+				// NOTE: shutdown the broker and nodes
+				shutDownRequest := stubs.KeyRequest{Key: "k"}
+				shutDownResponse := new(stubs.CurrentStateResponse)
+				done := client.Go(stubs.HandleKey, shutDownRequest, shutDownResponse, nil)
+				<-done.Done
+
+				time.Sleep(500 * time.Millisecond)
+				os.Exit(0)
+			case "p":
+				// NOTE: print he current turn and pause the game
+				request := stubs.KeyRequest{
+					Key: "p",
+				}
+				response := new(stubs.CurrentStateResponse)
+				err := client.Call(stubs.HandleKey, request, response)
+				if err != nil {
+					fmt.Printf("Error HandleKey -> %s", err.Error())
+					os.Exit(1)
+				}
+				c.events <- StateChange{CompletedTurns: response.Turn, NewState: Paused}
+				fmt.Println("Turn" + strconv.Itoa(response.Turn) + "paused")
+
+				for {
+					if <-c.ioKeyPress == 'p' {
+						request := stubs.KeyRequest{
+							Key: "p",
+						}
+						response := new(stubs.CurrentStateResponse)
+						err := client.Call(stubs.HandleKey, request, response)
+						if err != nil {
+							fmt.Printf("Error HandleKey -> %s", err.Error())
+							os.Exit(1)
+						}
+						c.events <- StateChange{CompletedTurns: response.Turn, NewState: Executing}
+						fmt.Println("Continuing")
+						break
+					}
+				}
+			default:
+				fmt.Println("Invalid key")
 			}
-		}(workerAddr, startRow, endRow)
+		}
+
 	}
 
-	done := make(chan struct{}) // 用于通知 goroutine 退出
-	go func() {
-		//time.Sleep(2 * time.Second)
-		loopTimer := time.NewTicker(time.Second * 2)
-		defer loopTimer.Stop()
+}
 
-		for {
-			select {
-			case <-done: // 当收到 done 信号时退出循环
-				fmt.Println("Received exit signal, exiting loop...")
-				return
-			case <-loopTimer.C:
-				alives, aturn := getAllAliveCells(p.Workers, p.Turns)
-				c.events <- AliveCellsCount{CompletedTurns: aturn, CellsCount: alives}
-			}
-		}
-	}()
+func startGame(p Params, c distributorChannels) {
+	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
+	initialWorld := getImage(p, c, worldSlice)
 
-	// Key presses
-	go func() {
-		for {
-			key := <-keyPresses
-			if key == 's' {
-				fmt.Println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS")
-				controllerKeyS(p.Workers, p, c)
-			} else if key == 'q' {
-				fmt.Println("QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ")
-				controllerKeyQ(p.Workers, p, c)
-			} else if key == 'k' {
-				fmt.Println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK")
-				controllerKeyK(p.Workers, p, c)
-				close(done)
-				close(c.events)
-				os.Exit(0)
-			} else if key == 'p' {
-				fmt.Println("PPPPPPPPPPPPPPPPPPPPPPPPPPPPPP")
-				paused = !paused
-				controllerKeyP(p.Workers, p, c, paused)
-			}
-		}
-	}()
+	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
 
-	wg.Wait()
-	// TODO: Report the final state using FinalTurnCompleteEvent.
-	writeNewWorld(world, p.Turns, p, c)
-	// 获取所有活细胞的坐标并转换为 []util.Cell
-	aliveCells := getAliveCells(world, p.ImageWidth, p.ImageHeight)
-	// 发送最终状态报告
-	c.events <- FinalTurnComplete{CompletedTurns: turn, Alive: aliveCells}
+	finalWorld := gameOfLifeController(p, c, initialWorld)
+
+	aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
+	c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
+	writeImage(p, c, p.Turns, finalWorld)
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
-	c.events <- StateChange{turn, Quitting}
+	c.events <- StateChange{p.Turns, Quitting}
 
-	close(done)
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
 }
 
-func controllerKeyS(workers []string, p Params, c distributorChannels) {
-	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
-	worksWorld := make(map[int]map[int][][]uint8)
-	newWorld := make([][]uint8, p.ImageHeight)
-	for i := range newWorld {
-		newWorld[i] = make([]uint8, p.ImageWidth)
-	}
-	startRow := 0
+func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs.Response) (err error) {
+	oldWorld := request.OldWorld
+	newWorld := request.NewWorld
+	turn := request.Turn
 
-	for i := 0; i < len(workers); i++ {
-		client, err := rpc.Dial("tcp", workers[i])
-		if err != nil {
-			panic(err)
-		}
-		defer client.Close()
-
-		request := stubs.WorkerKeyRequest{Key: 's'}
-		response := new(stubs.WorkerKeyResponse)
-		client.Call(stubs.GoLWorkerKeyHandler, request, response)
-
-		worksWorld[i] = response.World
-		if response.Latest < minValue {
-			minValue = response.Latest
+	for i := range oldWorld {
+		for j := range oldWorld[i] {
+			if oldWorld[i][j] != newWorld[i][j] {
+				channels.events <- CellFlipped{CompletedTurns: turn, Cell: util.Cell{X: j, Y: i}}
+			}
 		}
 	}
 
-	fmt.Printf("S Key Process trun: %d\n", minValue)
-
-	for _, v := range worksWorld {
-		subNewWorld := v[minValue]
-
-		for v := range subNewWorld {
-			newWorld[startRow+v] = subNewWorld[v]
-		}
-	}
-
-	writeNewWorld(newWorld, minValue, p, c)
+	channels.events <- TurnComplete{CompletedTurns: turn}
+	return err
 }
 
-func controllerKeyQ(workers []string, p Params, c distributorChannels) {
-	for i := 0; i < len(workers); i++ {
-		client, err := rpc.Dial("tcp", workers[i])
+// distributor divides the work between workers and interacts with other goroutines.
+func distributor(p Params, c distributorChannels) {
+	channels = c
+
+	if !distributorRegistered {
+		err := rpc.Register(&Distributor{})
 		if err != nil {
-			panic(err)
+			fmt.Println("Error registering distributor: ", err)
+			return
 		}
-		defer client.Close()
-		request := stubs.WorkerKeyRequest{Key: 'q'}
-		response := new(stubs.WorkerKeyResponse)
-		client.Call(stubs.GoLWorkerKeyHandler, request, response)
-	}
-	fmt.Println("Q Key Process Finish")
-}
-
-func controllerKeyK(workers []string, p Params, c distributorChannels) {
-	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
-	worksWorld := make(map[int]map[int][][]uint8)
-	newWorld := make([][]uint8, p.ImageHeight)
-	for i := range newWorld {
-		newWorld[i] = make([]uint8, p.ImageWidth)
-	}
-	startRow := 0
-
-	for i := 0; i < len(workers); i++ {
-		client, err := rpc.Dial("tcp", workers[i])
-		if err != nil {
-			panic(err)
-		}
-		defer client.Close()
-
-		request := stubs.WorkerKeyRequest{Key: 'k'}
-		response := new(stubs.WorkerKeyResponse)
-		client.Call(stubs.GoLWorkerKeyHandler, request, response)
-
-		worksWorld[i] = response.World
-		if response.Latest < minValue {
-			minValue = response.Latest
-		}
-	}
-	fmt.Printf("K Key Process trun: %d\n", minValue)
-	for _, v := range worksWorld {
-		subNewWorld := v[minValue]
-
-		for v := range subNewWorld {
-			newWorld[startRow+v] = subNewWorld[v]
-		}
+		distributorRegistered = true
 	}
 
-	writeNewWorld(newWorld, minValue, p, c)
-}
+	pAddr := "127.0.0.1:8082"
+	// pAddr := "local_ip:8082"
+	listener, err := net.Listen("tcp", pAddr)
 
-func controllerKeyP(workers []string, p Params, c distributorChannels, paused bool) {
-	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
-	worksWorld := make(map[int]map[int][][]uint8)
-	newWorld := make([][]uint8, p.ImageHeight)
-	for i := range newWorld {
-		newWorld[i] = make([]uint8, p.ImageWidth)
-	}
-	startRow := 0
-
-	for i := 0; i < len(workers); i++ {
-		client, err := rpc.Dial("tcp", workers[i])
-		if err != nil {
-			panic(err)
-		}
-		defer client.Close()
-
-		request := stubs.WorkerKeyRequest{Key: 'p'}
-		response := new(stubs.WorkerKeyResponse)
-		client.Call(stubs.GoLWorkerKeyHandler, request, response)
-
-		worksWorld[i] = response.World
-		if response.Latest < minValue {
-			minValue = response.Latest
-		}
+	if err != nil {
+		fmt.Println("Error listening: ", err)
+		os.Exit(1)
 	}
 
-	fmt.Printf("P Key Process trun: %d\n", minValue)
-	for _, v := range worksWorld {
-		subNewWorld := v[minValue]
+	defer listener.Close()
+	fmt.Println("Distributor running on port: ", pAddr)
 
-		for v := range subNewWorld {
-			newWorld[startRow+v] = subNewWorld[v]
-		}
-	}
+	// allow the program to continue running while waiting for connections
+	go rpc.Accept(listener)
 
-	if paused {
-		c.events <- CellsFlipped{CompletedTurns: minValue, Cells: getAliveCells(newWorld, p.ImageWidth, p.ImageHeight)}
-		c.events <- StateChange{minValue, Paused}
-	} else {
-		c.events <- StateChange{minValue, Executing}
-	}
-}
-
-func getAllAliveCells(workers []string, turn int) (int, int) {
-	count := 0
-	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
-	worksAlice := make(map[int]map[int]int)
-
-	for i := 0; i < len(workers); i++ {
-		client, err := rpc.Dial("tcp", workers[i])
-		if err != nil {
-			panic(err)
-		}
-		defer client.Close()
-
-		req := stubs.AliveRequest{}
-		response := new(stubs.AliveResponse)
-		err = client.Call(stubs.GoLGetWorkerAliveCellsHandler, req, response)
-		if err != nil {
-			panic(err)
-		}
-
-		worksAlice[i] = response.CountMap
-		if response.Latest < minValue {
-			minValue = response.Latest
-		}
-	}
-
-	for _, v := range worksAlice {
-		count += v[minValue]
-	}
-
-	return count, minValue
+	startGame(p, c)
 }
