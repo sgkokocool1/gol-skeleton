@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/rpc"
 	"os"
-	"strconv"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/stubs"
@@ -29,16 +28,36 @@ var (
 
 type Distributor struct{}
 
+func startGame(p Params, c distributorChannels) {
+	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
+	initialWorld := getImage(p, c, worldSlice)
+
+	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
+
+	finalWorld := gameOfLifeController(p, c, initialWorld)
+
+	aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
+	c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
+	writeImage(p, c, p.Turns, finalWorld)
+
+	// Ensure IO completion before exiting
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
+
+	c.events <- StateChange{p.Turns, Quitting}
+	close(c.events)
+}
+
 func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) [][]uint8 {
 	ticker := time.NewTicker(2 * time.Second)
 	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
-	// client, _ := rpc.Dial("tcp", "local_ip:8083")
 	defer client.Close()
+
 	request := stubs.Request{
 		World: initialWorld,
 		Params: stubs.Params{
 			Turns:       p.Turns,
-			Threads:     p.Threads, // just for testing purposes
+			Threads:     p.Threads,
 			ImageWidth:  p.ImageWidth,
 			ImageHeight: p.ImageHeight,
 		},
@@ -52,125 +71,100 @@ func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint
 			ticker.Stop()
 			return response.World
 		case <-ticker.C:
-			request := stubs.BlankRequest{}
-			response := new(stubs.CurrentStateResponse)
-			err := client.Call(stubs.GetCurrentState, request, response)
-			if err != nil {
-				fmt.Printf("Error GetCurrentState -> %s", err.Error())
-				os.Exit(1)
-			}
-			c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
-
+			sendAliveCellsCount(client, c)
 		case key := <-c.ioKeyPress:
-			switch string(key) {
-			case "s":
-				// NOTE: generate a PGM file of the current state
-				request := stubs.BlankRequest{}
-				response := new(stubs.CurrentStateResponse)
-				err := client.Call(stubs.GetCurrentState, request, response)
-				if err != nil {
-					fmt.Printf("Error GetCurrentState -> %s", err.Error())
-					os.Exit(1)
-				}
-				writeImage(p, c, response.Turn, response.CurrentWorld)
-			case "q":
-				// NOTE: close the client and reset the broker
-				keyRequest := stubs.KeyRequest{Key: "q"}
-				keyResponse := new(stubs.CurrentStateResponse)
-				keyError := client.Call(stubs.HandleKey, keyRequest, keyResponse)
-				if keyError != nil {
-					fmt.Printf("Error HandleKey -> %s", keyError.Error())
-					os.Exit(1)
-				}
-				writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
-				c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
-				close(c.events)
-
-				time.Sleep(500 * time.Millisecond)
-				os.Exit(0)
-			case "k":
-				// NOTE: get the current state
-				keyRequest := stubs.KeyRequest{Key: "q"}
-				keyResponse := new(stubs.CurrentStateResponse)
-				keyError := client.Call(stubs.HandleKey, keyRequest, keyResponse)
-				if keyError != nil {
-					fmt.Printf("Error HandleKey -> %s", keyError.Error())
-					os.Exit(1)
-				}
-				writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
-				c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
-				close(c.events)
-
-				// NOTE: shutdown the broker and nodes
-				shutDownRequest := stubs.KeyRequest{Key: "k"}
-				shutDownResponse := new(stubs.CurrentStateResponse)
-				done := client.Go(stubs.HandleKey, shutDownRequest, shutDownResponse, nil)
-				<-done.Done
-
-				time.Sleep(500 * time.Millisecond)
-				os.Exit(0)
-			case "p":
-				// NOTE: print he current turn and pause the game
-				request := stubs.KeyRequest{
-					Key: "p",
-				}
-				response := new(stubs.CurrentStateResponse)
-				err := client.Call(stubs.HandleKey, request, response)
-				if err != nil {
-					fmt.Printf("Error HandleKey -> %s", err.Error())
-					os.Exit(1)
-				}
-				c.events <- StateChange{CompletedTurns: response.Turn, NewState: Paused}
-				fmt.Println("Turn" + strconv.Itoa(response.Turn) + "paused")
-
-				for {
-					if <-c.ioKeyPress == 'p' {
-						request := stubs.KeyRequest{
-							Key: "p",
-						}
-						response := new(stubs.CurrentStateResponse)
-						err := client.Call(stubs.HandleKey, request, response)
-						if err != nil {
-							fmt.Printf("Error HandleKey -> %s", err.Error())
-							os.Exit(1)
-						}
-						c.events <- StateChange{CompletedTurns: response.Turn, NewState: Executing}
-						fmt.Println("Continuing")
-						break
-					}
-				}
-			default:
-				fmt.Println("Invalid key")
-			}
+			handleKeyPress(p, c, client, key)
 		}
-
 	}
-
 }
 
-func startGame(p Params, c distributorChannels) {
-	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
-	initialWorld := getImage(p, c, worldSlice)
+func sendAliveCellsCount(client *rpc.Client, c distributorChannels) {
+	request := stubs.BlankRequest{}
+	response := new(stubs.CurrentStateResponse)
+	err := client.Call(stubs.GetCurrentState, request, response)
+	if err != nil {
+		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
+		os.Exit(1)
+	}
+	c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
+}
 
-	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
+func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune) {
+	switch key {
+	case 's':
+		saveCurrentState(client, p, c)
+	case 'q', 'k':
+		quitOrShutdownGame(p, c, client, key)
+	case 'p':
+		pauseGame(p, c, client)
+	default:
+		fmt.Println("Invalid key")
+	}
+}
 
-	finalWorld := gameOfLifeController(p, c, initialWorld)
+func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
+	request := stubs.BlankRequest{}
+	response := new(stubs.CurrentStateResponse)
+	err := client.Call(stubs.GetCurrentState, request, response)
+	if err != nil {
+		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
+		os.Exit(1)
+	}
+	writeImage(p, c, response.Turn, response.CurrentWorld)
+}
 
-	aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
-	writeImage(p, c, p.Turns, finalWorld)
-
-	// Make sure that the Io has finished any output before exiting.
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
-
-	c.events <- StateChange{p.Turns, Quitting}
-
-	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
+func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) {
+	keyRequest := stubs.KeyRequest{Key: string(key)}
+	keyResponse := new(stubs.CurrentStateResponse)
+	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
+	if err != nil {
+		fmt.Printf("Error HandleKey -> %s\n", err.Error())
+		os.Exit(1)
+	}
+	writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
+	c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
 	close(c.events)
+
+	if key == 'k' {
+		shutdownBrokerAndNodes(client)
+	}
+	os.Exit(0)
 }
 
-func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs.Response) (err error) {
+func shutdownBrokerAndNodes(client *rpc.Client) {
+	shutDownRequest := stubs.KeyRequest{Key: "k"}
+	shutDownResponse := new(stubs.CurrentStateResponse)
+	done := client.Go(stubs.HandleKey, shutDownRequest, shutDownResponse, nil)
+	<-done.Done
+	time.Sleep(500 * time.Millisecond)
+}
+
+func pauseGame(p Params, c distributorChannels, client *rpc.Client) {
+	togglePause(client)
+	c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
+	fmt.Println("Game paused")
+
+	for {
+		if <-c.ioKeyPress == 'p' {
+			togglePause(client)
+			c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
+			fmt.Println("Game resumed")
+			break
+		}
+	}
+}
+
+func togglePause(client *rpc.Client) {
+	request := stubs.KeyRequest{Key: "p"}
+	response := new(stubs.CurrentStateResponse)
+	err := client.Call(stubs.HandleKey, request, response)
+	if err != nil {
+		fmt.Printf("Error HandleKey -> %s\n", err.Error())
+		os.Exit(1)
+	}
+}
+
+func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs.Response) error {
 	oldWorld := request.OldWorld
 	newWorld := request.NewWorld
 	turn := request.Turn
@@ -184,36 +178,32 @@ func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs
 	}
 
 	channels.events <- TurnComplete{CompletedTurns: turn}
-	return err
+	return nil
 }
 
-// distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
 	channels = c
 
 	if !distributorRegistered {
-		err := rpc.Register(&Distributor{})
-		if err != nil {
-			fmt.Println("Error registering distributor: ", err)
+		if err := rpc.Register(&Distributor{}); err != nil {
+			fmt.Println("Error registering distributor:", err)
 			return
 		}
 		distributorRegistered = true
 	}
 
-	pAddr := "127.0.0.1:8082"
-	// pAddr := "local_ip:8082"
-	listener, err := net.Listen("tcp", pAddr)
+	listenOnPort("127.0.0.1:8082")
+	startGame(p, c)
+}
 
+func listenOnPort(addr string) {
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Println("Error listening: ", err)
+		fmt.Printf("Error listening on %s: %v\n", addr, err)
 		os.Exit(1)
 	}
-
 	defer listener.Close()
-	fmt.Println("Distributor running on port: ", pAddr)
 
-	// allow the program to continue running while waiting for connections
+	fmt.Println("Distributor running on port:", addr)
 	go rpc.Accept(listener)
-
-	startGame(p, c)
 }
