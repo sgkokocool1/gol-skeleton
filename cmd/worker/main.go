@@ -7,13 +7,15 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
+
+	"uk.ac.bris.cs/gameoflife/stubs"
 )
 
 type Params struct {
 	NeighborTop    string
 	NeighborBottom string
-	TopHaloChan    chan HaloRequest
-	BottomHaloChan chan HaloRequest
+	TopHaloChan    chan stubs.HaloRequest
+	BottomHaloChan chan stubs.HaloRequest
 }
 
 func main() {
@@ -35,11 +37,11 @@ func main() {
 	flag.Parse()
 
 	// var topMap, bottomMap sync.Map
-	golService := &GolService{
+	golService := &GolWorkerService{
 		NeighborTop:    params.NeighborTop,
 		NeighborBottom: params.NeighborBottom,
-		TopHaloChan:    make(chan HaloRequest),
-		BottomHaloChan: make(chan HaloRequest),
+		TopHaloChan:    make(chan stubs.HaloRequest),
+		BottomHaloChan: make(chan stubs.HaloRequest),
 	}
 
 	rpc.Register(golService)

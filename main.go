@@ -15,6 +15,7 @@ import (
 func main() {
 	//runtime.LockOSThread()
 	var params gol.Params
+	params.Workers = append(params.Workers, "127.0.0.1:1234")
 
 	flag.IntVar(
 		&params.Threads,
@@ -25,20 +26,22 @@ func main() {
 	flag.IntVar(
 		&params.ImageWidth,
 		"w",
-		16,
+		512,
 		"Specify the width of the image. Defaults to 512.")
 
 	flag.IntVar(
 		&params.ImageHeight,
 		"h",
-		16,
+		512,
 		"Specify the height of the image. Defaults to 512.")
 
 	flag.IntVar(
 		&params.Turns,
 		"turns",
-		1,
+		1000,
 		"Specify the number of turns to process. Defaults to 10000000000.")
+
+	flag.Var(&params.Workers, "workers", "A list of workers ip and port 127.0.0.1:8083")
 
 	headless := flag.Bool(
 		"headless",

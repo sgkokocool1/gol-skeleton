@@ -3,6 +3,7 @@ package sdl
 import (
 	"fmt"
 	"time"
+
 	"github.com/veandco/go-sdl2/sdl"
 	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/util"
@@ -55,7 +56,7 @@ sdl:
 				w.FlipPixel(e.Cell.X, e.Cell.Y)
 			case gol.CellsFlipped:
 				for _, cell := range e.Cells {
-					w.FlipPixel(cell.X, cell.Y) 
+					w.FlipPixel(cell.X, cell.Y)
 				}
 			case gol.TurnComplete:
 				dirty = true

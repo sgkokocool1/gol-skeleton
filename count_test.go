@@ -66,6 +66,7 @@ func TestAlive(t *testing.T) {
 
 				if i >= 5 {
 					keyPresses <- 'q'
+					time.Sleep(1 * time.Second)
 					return
 				}
 			}

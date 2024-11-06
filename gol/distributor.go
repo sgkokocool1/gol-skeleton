@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"math"
 	"net/rpc"
+	"os"
 	"sync"
 	"time"
 
+	"uk.ac.bris.cs/gameoflife/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
@@ -72,7 +74,7 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	// TODO: Create a 2D slice to store the world.
 	world := initializeWorld(p, c)
 	turn := 0
-
+	paused := false // 表示当前是否处于暂停状态
 	c.events <- CellsFlipped{CompletedTurns: turn, Cells: getAliveCells(world, p.ImageWidth, p.ImageHeight)}
 	c.events <- StateChange{turn, Executing}
 
@@ -104,7 +106,8 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 			if endRow < p.ImageHeight {
 				haloBottom = world[endRow]
 			}
-			req := GridRequest{
+
+			req := stubs.ComputeGridRequest{
 				HaloTop:    haloTop,
 				HaloBottom: haloBottom,
 				Iterations: p.Turns,
@@ -112,22 +115,17 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 				StartRow:   startRow,
 				EndRow:     endRow,
 			}
-
-			var res GridResponse
-			err = client.Call("GolService.ComputeGrid", req, &res)
-			if err != nil {
-				panic(err)
-			}
+			response := new(stubs.ComputeGridResponse)
+			client.Call(stubs.GoLWorkerComputeGridHandler, req, response)
 
 			// 合并结果
-			for row := range res.GridPart {
-				world[startRow+row] = res.GridPart[row]
+			for row := range response.GridPart {
+				world[startRow+row] = response.GridPart[row]
 			}
 		}(workerAddr, startRow, endRow)
 	}
 
 	done := make(chan struct{}) // 用于通知 goroutine 退出
-
 	go func() {
 		//time.Sleep(2 * time.Second)
 		loopTimer := time.NewTicker(time.Second * 2)
@@ -145,12 +143,31 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 		}
 	}()
 
+	// Key presses
+	go func() {
+		for {
+			key := <-keyPresses
+			if key == 's' {
+				fmt.Println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS")
+				controllerKeyS(p.Workers, p, c)
+			} else if key == 'q' {
+				fmt.Println("QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ")
+				controllerKeyQ(p.Workers, p, c)
+			} else if key == 'k' {
+				fmt.Println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK")
+				controllerKeyK(p.Workers, p, c)
+				close(done)
+				close(c.events)
+				os.Exit(0)
+			} else if key == 'p' {
+				fmt.Println("PPPPPPPPPPPPPPPPPPPPPPPPPPPPPP")
+				paused = !paused
+				controllerKeyP(p.Workers, p, c, paused)
+			}
+		}
+	}()
+
 	wg.Wait()
-
-	for _, row := range world {
-		fmt.Println(row)
-	}
-
 	// TODO: Report the final state using FinalTurnCompleteEvent.
 	writeNewWorld(world, p.Turns, p, c)
 	// 获取所有活细胞的坐标并转换为 []util.Cell
@@ -169,6 +186,139 @@ func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	close(c.events)
 }
 
+func controllerKeyS(workers []string, p Params, c distributorChannels) {
+	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
+	worksWorld := make(map[int]map[int][][]uint8)
+	newWorld := make([][]uint8, p.ImageHeight)
+	for i := range newWorld {
+		newWorld[i] = make([]uint8, p.ImageWidth)
+	}
+	startRow := 0
+
+	for i := 0; i < len(workers); i++ {
+		client, err := rpc.Dial("tcp", workers[i])
+		if err != nil {
+			panic(err)
+		}
+		defer client.Close()
+
+		request := stubs.WorkerKeyRequest{Key: 's'}
+		response := new(stubs.WorkerKeyResponse)
+		client.Call(stubs.GoLWorkerKeyHandler, request, response)
+
+		worksWorld[i] = response.World
+		if response.Latest < minValue {
+			minValue = response.Latest
+		}
+	}
+
+	fmt.Printf("S Key Process trun: %d\n", minValue)
+
+	for _, v := range worksWorld {
+		subNewWorld := v[minValue]
+
+		for v := range subNewWorld {
+			newWorld[startRow+v] = subNewWorld[v]
+		}
+	}
+
+	writeNewWorld(newWorld, minValue, p, c)
+}
+
+func controllerKeyQ(workers []string, p Params, c distributorChannels) {
+	for i := 0; i < len(workers); i++ {
+		client, err := rpc.Dial("tcp", workers[i])
+		if err != nil {
+			panic(err)
+		}
+		defer client.Close()
+		request := stubs.WorkerKeyRequest{Key: 'q'}
+		response := new(stubs.WorkerKeyResponse)
+		client.Call(stubs.GoLWorkerKeyHandler, request, response)
+	}
+	fmt.Println("Q Key Process Finish")
+}
+
+func controllerKeyK(workers []string, p Params, c distributorChannels) {
+	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
+	worksWorld := make(map[int]map[int][][]uint8)
+	newWorld := make([][]uint8, p.ImageHeight)
+	for i := range newWorld {
+		newWorld[i] = make([]uint8, p.ImageWidth)
+	}
+	startRow := 0
+
+	for i := 0; i < len(workers); i++ {
+		client, err := rpc.Dial("tcp", workers[i])
+		if err != nil {
+			panic(err)
+		}
+		defer client.Close()
+
+		request := stubs.WorkerKeyRequest{Key: 'k'}
+		response := new(stubs.WorkerKeyResponse)
+		client.Call(stubs.GoLWorkerKeyHandler, request, response)
+
+		worksWorld[i] = response.World
+		if response.Latest < minValue {
+			minValue = response.Latest
+		}
+	}
+	fmt.Printf("K Key Process trun: %d\n", minValue)
+	for _, v := range worksWorld {
+		subNewWorld := v[minValue]
+
+		for v := range subNewWorld {
+			newWorld[startRow+v] = subNewWorld[v]
+		}
+	}
+
+	writeNewWorld(newWorld, minValue, p, c)
+}
+
+func controllerKeyP(workers []string, p Params, c distributorChannels, paused bool) {
+	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
+	worksWorld := make(map[int]map[int][][]uint8)
+	newWorld := make([][]uint8, p.ImageHeight)
+	for i := range newWorld {
+		newWorld[i] = make([]uint8, p.ImageWidth)
+	}
+	startRow := 0
+
+	for i := 0; i < len(workers); i++ {
+		client, err := rpc.Dial("tcp", workers[i])
+		if err != nil {
+			panic(err)
+		}
+		defer client.Close()
+
+		request := stubs.WorkerKeyRequest{Key: 'p'}
+		response := new(stubs.WorkerKeyResponse)
+		client.Call(stubs.GoLWorkerKeyHandler, request, response)
+
+		worksWorld[i] = response.World
+		if response.Latest < minValue {
+			minValue = response.Latest
+		}
+	}
+
+	fmt.Printf("P Key Process trun: %d\n", minValue)
+	for _, v := range worksWorld {
+		subNewWorld := v[minValue]
+
+		for v := range subNewWorld {
+			newWorld[startRow+v] = subNewWorld[v]
+		}
+	}
+
+	if paused {
+		c.events <- CellsFlipped{CompletedTurns: minValue, Cells: getAliveCells(newWorld, p.ImageWidth, p.ImageHeight)}
+		c.events <- StateChange{minValue, Paused}
+	} else {
+		c.events <- StateChange{minValue, Executing}
+	}
+}
+
 func getAllAliveCells(workers []string, turn int) (int, int) {
 	count := 0
 	minValue := math.MaxInt // 初始化为最大整数，确保第一个值被赋给 minValue
@@ -181,17 +331,16 @@ func getAllAliveCells(workers []string, turn int) (int, int) {
 		}
 		defer client.Close()
 
-		req := AliveRequest{}
-		var res AliveResponse
-
-		err = client.Call("GolService.GetAliveCells", req, &res)
+		req := stubs.AliveRequest{}
+		response := new(stubs.AliveResponse)
+		err = client.Call(stubs.GoLGetWorkerAliveCellsHandler, req, response)
 		if err != nil {
 			panic(err)
 		}
 
-		worksAlice[i] = res.CountMap
-		if res.Latest < minValue {
-			minValue = res.Latest
+		worksAlice[i] = response.CountMap
+		if response.Latest < minValue {
+			minValue = response.Latest
 		}
 	}
 

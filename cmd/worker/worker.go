@@ -3,86 +3,167 @@ package main
 import (
 	"fmt"
 	"net/rpc"
+	"os"
+	"sync"
 	"time"
 
-	"uk.ac.bris.cs/gameoflife/gol"
+	"uk.ac.bris.cs/gameoflife/stubs"
 )
 
 type AliveCount struct {
+	mu     sync.Mutex
 	Count  map[int]int
+	Latest int
+}
+
+type LatestWorld struct {
+	mu     sync.Mutex
+	World  map[int][][]uint8
 	Latest int
 }
 
 var countMap = make(map[int]int)
 var aliveCount AliveCount = AliveCount{Count: countMap, Latest: 0}
+var worldMap = make(map[int][][]uint8)
+var latestWorld LatestWorld = LatestWorld{World: worldMap, Latest: 0}
+var QuitFlag, PauseFlag bool = false, false
 
-// 光环数据的 RPC 请求和响应结构
-type HaloRequest struct {
-	HaloData  []uint8
-	Iteration int
-}
-type HaloResponse struct {
-	Success bool
-}
-
-type GolService struct {
+type GolWorkerService struct {
 	NeighborTop    string
 	NeighborBottom string
-	TopHaloChan    chan HaloRequest
-	BottomHaloChan chan HaloRequest
+	TopHaloChan    chan stubs.HaloRequest
+	BottomHaloChan chan stubs.HaloRequest
 }
 
-func (s *GolService) GetAliveCells(req *gol.AliveRequest, res *gol.AliveResponse) error {
-	// 模拟存活单元计数
-	res.CountMap = aliveCount.Count
-	res.Latest = aliveCount.Latest
-	return nil
-}
-
-// sendHalo 发送光环数据，并在 HaloRequest 中附加当前的迭代步数。
-func (s *GolService) sendHalo(haloData []uint8, iter int, neighborAddr string, isTop bool) error {
-	fmt.Printf("time:%v; neighborAddr:%s; istop:%v; turn: %d\n", time.Now(), neighborAddr, isTop, iter)
-	if neighborAddr == "" {
+func (s *GolWorkerService) WorkerKeyWorld(req stubs.WorkerKeyRequest, res *stubs.WorkerKeyResponse) error {
+	if req.Key == 's' {
+		fmt.Println("SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS")
+		latestWorld.mu.Lock()
+		res.World = latestWorld.World
+		res.Latest = latestWorld.Latest
+		latestWorld.mu.Unlock()
+		return nil
+	}
+	if req.Key == 'q' { // Resetting state of server
+		fmt.Println("QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ")
+		QuitFlag = true
+		latestWorld.mu.Lock()
+		res.World = latestWorld.World
+		res.Latest = latestWorld.Latest
+		latestWorld.mu.Unlock()
+		return nil
+	}
+	if req.Key == 'k' {
+		fmt.Println("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK")
+		QuitFlag = true
+		latestWorld.mu.Lock()
+		res.World = latestWorld.World
+		res.Latest = latestWorld.Latest
+		latestWorld.mu.Unlock()
+		os.Exit(0)
+	}
+	if req.Key == 'p' {
+		fmt.Println("PPPPPPPPPPPPPPPPPPPPPPPPPPPPPP")
+		PauseFlag = !PauseFlag
+		latestWorld.mu.Lock()
+		res.World = latestWorld.World
+		res.Latest = latestWorld.Latest
+		latestWorld.mu.Unlock()
 		return nil
 	}
 
-	client, err := rpc.Dial("tcp", neighborAddr)
-	if err != nil {
-		fmt.Println("Error connecting to neighbor:", err)
-		return err
-	}
-	defer client.Close()
-
-	request := HaloRequest{HaloData: haloData, Iteration: iter}
-	var response HaloResponse
-	if !isTop {
-		err = client.Call("GolService.ReceiveTopHalo", request, &response)
-	} else {
-		err = client.Call("GolService.ReceiveBottomHalo", request, &response)
-	}
-	if err != nil || !response.Success {
-		fmt.Printf("Error sending halo to %s for iter %d: %v\n", neighborAddr, iter, err)
-	}
-	return err
-}
-
-// 接收光环数据的 RPC 方法，放入对应通道
-func (s *GolService) ReceiveTopHalo(req HaloRequest, res *HaloResponse) error {
-	fmt.Printf("time:%v; recive top halo; turn:%d\n", time.Now(), req.Iteration)
-	s.TopHaloChan <- req
-	*res = HaloResponse{Success: true}
 	return nil
 }
 
-func (s *GolService) ReceiveBottomHalo(req HaloRequest, res *HaloResponse) error {
+func (s *GolWorkerService) GetWorkerAliveCells(req stubs.AliveRequest, res *stubs.AliveResponse) error {
+	// 模拟存活单元计数
+	aliveCount.mu.Lock()
+	res.CountMap = aliveCount.Count
+	res.Latest = aliveCount.Latest
+	aliveCount.mu.Unlock()
+	return nil
+}
+
+// 接收光环数据的 RPC 方法，放入对应通道
+func (s *GolWorkerService) ReceiveTopHalo(req stubs.HaloRequest, res *stubs.HaloResponse) error {
+	fmt.Printf("time:%v; recive top halo; turn:%d\n", time.Now(), req.Iteration)
+	s.TopHaloChan <- req
+	*res = stubs.HaloResponse{Success: true}
+	return nil
+}
+
+func (s *GolWorkerService) ReceiveBottomHalo(req stubs.HaloRequest, res *stubs.HaloResponse) error {
 	fmt.Printf("time:%v; recive bot halo; turn:%d\n", time.Now(), req.Iteration)
 	s.BottomHaloChan <- req
-	*res = HaloResponse{Success: true}
+	*res = stubs.HaloResponse{Success: true}
+	return nil
+}
+
+func (s *GolWorkerService) WorkerComputeGrid(req stubs.ComputeGridRequest, res *stubs.ComputeGridResponse) error {
+	fmt.Println("recive 1234")
+	QuitFlag, PauseFlag = false, false
+	iter := 0
+	grid := req.SubGrid
+	topHalo := req.HaloTop
+	bottomHalo := req.HaloBottom
+
+	for iter < req.Iterations {
+		if QuitFlag {
+			return nil
+		}
+
+		if PauseFlag {
+			continue
+		}
+
+		iter++
+		// 迭代并更新子网格
+		newSubGrid := make([][]uint8, len(grid))
+		for i := range newSubGrid {
+			newSubGrid[i] = make([]uint8, len(grid[i]))
+		}
+		for i := 0; i < len(grid); i++ {
+			for j := 0; j < len(grid[i]); j++ {
+				aliveNeighbors := countAliveNeighbors(grid, i, j, topHalo, bottomHalo)
+				if grid[i][j] == 255 {
+					if aliveNeighbors < 2 || aliveNeighbors > 3 {
+						newSubGrid[i][j] = 0
+					} else {
+						newSubGrid[i][j] = 255
+					}
+				} else if aliveNeighbors == 3 {
+					newSubGrid[i][j] = 255
+				}
+			}
+		}
+		grid = newSubGrid
+
+		aliveCount.mu.Lock()
+		aliveCount.Count[iter] = countAliveCells(newSubGrid)
+		aliveCount.Latest = iter
+		aliveCount.mu.Unlock()
+
+		latestWorld.mu.Lock()
+		latestWorld.World[iter] = grid
+		latestWorld.Latest = iter
+		latestWorld.mu.Unlock()
+
+		// 发送当前迭代的光环数据到邻居节点
+		go s.sendHalo(grid[0], iter, s.NeighborTop, true)
+		go s.sendHalo(grid[len(grid)-1], iter, s.NeighborBottom, false)
+
+		// 阻塞，等待接收来自邻居的光环数据
+		topHalo = s.receiveHalo(iter, true)
+		bottomHalo = s.receiveHalo(iter, false)
+		fmt.Printf("time:%v; turn: %d\n", time.Now(), iter)
+	}
+
+	res.GridPart = grid
 	return nil
 }
 
 // 接收特定迭代的光环数据
-func (s *GolService) receiveHalo(iter int, isTop bool) []uint8 {
+func (s *GolWorkerService) receiveHalo(iter int, isTop bool) []uint8 {
 	fmt.Printf("time:%v; istop:%v; turn: %d\n", time.Now(), isTop, iter)
 
 	if isTop {
@@ -106,51 +187,31 @@ func (s *GolService) receiveHalo(iter int, isTop bool) []uint8 {
 	return []uint8{}
 }
 
-func (s *GolService) ComputeGrid(req gol.GridRequest, res *gol.GridResponse) error {
-	fmt.Println("recive 1234")
-	iter := 0
-	grid := req.SubGrid
-	topHalo := req.HaloTop
-	bottomHalo := req.HaloBottom
-
-	for iter < req.Iterations {
-		iter++
-
-		// 迭代并更新子网格
-		newSubGrid := make([][]uint8, len(grid))
-		for i := range newSubGrid {
-			newSubGrid[i] = make([]uint8, len(grid[i]))
-		}
-		for i := 0; i < len(grid); i++ {
-			for j := 0; j < len(grid[i]); j++ {
-				aliveNeighbors := countAliveNeighbors(grid, i, j, topHalo, bottomHalo)
-				if grid[i][j] == 255 {
-					if aliveNeighbors < 2 || aliveNeighbors > 3 {
-						newSubGrid[i][j] = 0
-					} else {
-						newSubGrid[i][j] = 255
-					}
-				} else if aliveNeighbors == 3 {
-					newSubGrid[i][j] = 255
-				}
-			}
-		}
-		grid = newSubGrid
-		aliveCount.Count[iter] = countAliveCells(newSubGrid)
-		aliveCount.Latest = iter
-
-		// 发送当前迭代的光环数据到邻居节点
-		go s.sendHalo(grid[0], iter, s.NeighborTop, true)
-		go s.sendHalo(grid[len(grid)-1], iter, s.NeighborBottom, false)
-
-		// 阻塞，等待接收来自邻居的光环数据
-		topHalo = s.receiveHalo(iter, true)
-		bottomHalo = s.receiveHalo(iter, false)
-		fmt.Printf("time:%v; top:%v; bot:%v; turn: %d\n", time.Now(), topHalo, bottomHalo, iter)
+// sendHalo 发送光环数据，并在 HaloRequest 中附加当前的迭代步数。
+func (s *GolWorkerService) sendHalo(haloData []uint8, iter int, neighborAddr string, isTop bool) error {
+	fmt.Printf("time:%v; neighborAddr:%s; istop:%v; turn: %d\n", time.Now(), neighborAddr, isTop, iter)
+	if neighborAddr == "" {
+		return nil
 	}
 
-	res.GridPart = grid
-	return nil
+	client, err := rpc.Dial("tcp", neighborAddr)
+	if err != nil {
+		fmt.Println("Error connecting to neighbor:", err)
+		return err
+	}
+	defer client.Close()
+
+	request := stubs.HaloRequest{HaloData: haloData, Iteration: iter}
+	response := new(stubs.HaloResponse)
+	if !isTop {
+		err = client.Call(stubs.GoLReceiveTopHaloHandler, request, response)
+	} else {
+		err = client.Call(stubs.GoLReceiveBottomHaloHandler, request, response)
+	}
+	if err != nil || !response.Success {
+		fmt.Printf("Error sending halo to %s for iter %d: %v\n", neighborAddr, iter, err)
+	}
+	return err
 }
 
 func countAliveCells(world [][]uint8) int {
