@@ -40,6 +40,18 @@ func main() {
 		1000,
 		"Specify the number of turns to process. Defaults to 10000000000.")
 
+	flag.StringVar(
+		&params.Port,
+		"p",
+		"8082",
+		"Specify the port of controller process. Defaults to 8082.")
+
+	flag.StringVar(
+		&params.BrokerPort,
+		"p",
+		"8083",
+		"Specify the port of controller process. Defaults to 8083.")
+
 	headless := flag.Bool(
 		"headless",
 		false,

@@ -22,6 +22,8 @@ type Params struct {
 	Threads     int
 	ImageWidth  int
 	ImageHeight int
+	Port        string
+	BrokerPort  string
 }
 
 // Run starts the processing of Game of Life. It should initialise channels and goroutines.

@@ -50,7 +50,7 @@ func startGame(p Params, c distributorChannels) {
 
 func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) [][]uint8 {
 	ticker := time.NewTicker(2 * time.Second)
-	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
+	client, _ := rpc.Dial("tcp", p.BrokerPort)
 	defer client.Close()
 
 	request := stubs.Request{
@@ -192,7 +192,7 @@ func distributor(p Params, c distributorChannels) {
 		distributorRegistered = true
 	}
 
-	listenOnPort("127.0.0.1:8082")
+	listenOnPort(p.Port)
 	startGame(p, c)
 }
 
