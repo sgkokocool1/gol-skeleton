@@ -49,7 +49,6 @@ func startGame(p Params, c distributorChannels) {
 }
 
 func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) [][]uint8 {
-	pauseFlag := false
 	ticker := time.NewTicker(2 * time.Second)
 	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
 	defer client.Close()
@@ -74,7 +73,7 @@ func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint
 		case <-ticker.C:
 			sendAliveCellsCount(client, c)
 		case key := <-c.ioKeyPress:
-			handleKeyPress(p, c, client, key, pauseFlag)
+			handleKeyPress(p, c, client, key)
 		}
 	}
 }
@@ -90,14 +89,14 @@ func sendAliveCellsCount(client *rpc.Client, c distributorChannels) {
 	c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
 }
 
-func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune, pauseFlag bool) {
+func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune) {
 	switch key {
 	case 's':
 		saveCurrentState(client, p, c)
 	case 'q', 'k':
 		quitOrShutdownGame(p, c, client, key)
 	case 'p':
-		pauseGame(p, c, client, pauseFlag)
+		pauseGame(p, c, client)
 	default:
 		fmt.Println("Invalid key")
 	}
@@ -115,7 +114,7 @@ func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
 }
 
 func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) {
-	keyRequest := stubs.KeyRequest{Key: string('p')}
+	keyRequest := stubs.KeyRequest{Key: string('q')}
 	keyResponse := new(stubs.CurrentStateResponse)
 	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
 	if err != nil {
@@ -140,16 +139,18 @@ func shutdownBrokerAndNodes(client *rpc.Client) {
 	time.Sleep(500 * time.Millisecond)
 }
 
-func pauseGame(p Params, c distributorChannels, client *rpc.Client, pauseFlag bool) {
-	pauseFlag = !pauseFlag
-	if pauseFlag {
-		togglePause(client)
-		c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
-		fmt.Println("Game paused")
-	} else {
-		togglePause(client)
-		c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
-		fmt.Println("Game resumed")
+func pauseGame(p Params, c distributorChannels, client *rpc.Client) {
+	togglePause(client)
+	c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
+	fmt.Println("Game paused")
+
+	for {
+		if <-c.ioKeyPress == 'p' {
+			togglePause(client)
+			c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
+			fmt.Println("Game resumed")
+			break
+		}
 	}
 
 }

@@ -32,7 +32,7 @@ func writeImage(p Params, c distributorChannels, turn int, world [][]uint8) {
 
 	w := strconv.Itoa(p.ImageWidth)
 	h := strconv.Itoa(p.ImageHeight)
-	t := strconv.Itoa(p.Turns)
+	t := strconv.Itoa(turn)
 	filename := w + "x" + h + "x" + t
 	c.ioFilename <- filename
 
@@ -42,7 +42,10 @@ func writeImage(p Params, c distributorChannels, turn int, world [][]uint8) {
 		}
 	}
 
-	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename + ".png"}
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
+
+	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename}
 }
 
 func getImage(p Params, c distributorChannels, world [][]uint8) [][]uint8 {
