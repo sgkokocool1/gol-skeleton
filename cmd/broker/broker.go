@@ -87,6 +87,7 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 	defer func() {
 		b.quiteFlag = false
 		b.pauseFlag = false
+		turn = 0
 	}()
 	world = request.World
 	totalTurns = request.Params.Turns
