@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"uk.ac.bris.cs/gameoflife/sdl"
 	"uk.ac.bris.cs/gameoflife/util"
+
+	"uk.ac.bris.cs/gameoflife/sdl"
 )
 
 var w *sdl.Window

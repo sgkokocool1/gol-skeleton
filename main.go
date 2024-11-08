@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 
-	"uk.ac.bris.cs/gameoflife/gol"
 	"uk.ac.bris.cs/gameoflife/sdl"
+
+	"uk.ac.bris.cs/gameoflife/gol"
 )
 
 // main is the function called when starting Game of Life with 'go run .'
 func main() {
-	runtime.LockOSThread()
+	//runtime.LockOSThread()
 	var params gol.Params
 
 	flag.IntVar(
@@ -38,7 +38,7 @@ func main() {
 	flag.IntVar(
 		&params.Turns,
 		"turns",
-		100000,
+		1000,
 		"Specify the number of turns to process. Defaults to 10000000000.")
 
 	headless := flag.Bool(
