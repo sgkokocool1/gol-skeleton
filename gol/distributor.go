@@ -24,13 +24,12 @@ type distributorChannels struct {
 var (
 	distributorRegistered bool
 	channels              distributorChannels
-	pauseFlag             bool = false
+	pauseFlag             bool
 )
 
 type Distributor struct{}
 
 func startGame(p Params, c distributorChannels) {
-
 	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
 	initialWorld := getImage(p, c, worldSlice)
 
@@ -53,6 +52,9 @@ func startGame(p Params, c distributorChannels) {
 }
 
 func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) ([][]uint8, int) {
+	defer func() {
+		pauseFlag = false
+	}()
 	ticker := time.NewTicker(2 * time.Second)
 	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
 	defer client.Close()
@@ -73,7 +75,7 @@ func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint
 		select {
 		case <-done.Done:
 			ticker.Stop()
-			return response.World, p.Turns
+			return response.World, response.Turn
 		case <-ticker.C:
 			sendAliveCellsCount(client, c)
 		case key := <-c.ioKeyPress:

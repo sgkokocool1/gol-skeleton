@@ -84,6 +84,10 @@ func (b *Broker) shutdownWatcher() {
 
 // HandleBroker distributes the world update workload among nodes and manages their responses.
 func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) error {
+	defer func() {
+		b.quiteFlag = false
+		b.pauseFlag = false
+	}()
 	world = request.World
 	totalTurns = request.Params.Turns
 	numNodes := len(b.nodeAddresses)
@@ -101,10 +105,19 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 		world = updatedWorld
 		turn++
 		mutex.Unlock()
+
+		if b.quiteFlag {
+			time.Sleep(500 * time.Millisecond)
+			//b.pauseFlag = false
+			break
+		}
+
 		// Pause if needed
 		b.waitIfPaused()
+
 	}
 
+	response.Turn = turn
 	response.Status = "OK"
 	response.World = world
 	return nil

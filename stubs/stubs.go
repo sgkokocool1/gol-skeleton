@@ -25,6 +25,7 @@ type Request struct {
 type Response struct {
 	Message string
 	Status  string
+	Turn    int
 	World   [][]uint8
 }
 
