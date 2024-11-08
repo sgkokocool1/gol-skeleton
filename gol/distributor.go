@@ -24,31 +24,35 @@ type distributorChannels struct {
 var (
 	distributorRegistered bool
 	channels              distributorChannels
+	pauseFlag             bool = false
 )
 
 type Distributor struct{}
 
 func startGame(p Params, c distributorChannels) {
+
 	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
 	initialWorld := getImage(p, c, worldSlice)
 
 	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
 
-	finalWorld := gameOfLifeController(p, c, initialWorld)
+	finalWorld, turn := gameOfLifeController(p, c, initialWorld)
 
-	aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
-	writeImage(p, c, p.Turns, finalWorld)
+	if turn == p.Turns {
+		aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
+		c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
+		writeImage(p, c, p.Turns, finalWorld)
 
-	// Ensure IO completion before exiting
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
+		// Ensure IO completion before exiting
+		c.ioCommand <- ioCheckIdle
+		<-c.ioIdle
 
-	c.events <- StateChange{p.Turns, Quitting}
-	close(c.events)
+		c.events <- StateChange{p.Turns, Quitting}
+		close(c.events)
+	}
 }
 
-func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) [][]uint8 {
+func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) ([][]uint8, int) {
 	ticker := time.NewTicker(2 * time.Second)
 	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
 	defer client.Close()
@@ -69,11 +73,15 @@ func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint
 		select {
 		case <-done.Done:
 			ticker.Stop()
-			return response.World
+			return response.World, p.Turns
 		case <-ticker.C:
 			sendAliveCellsCount(client, c)
 		case key := <-c.ioKeyPress:
-			handleKeyPress(p, c, client, key)
+			res := handleKeyPress(p, c, client, key)
+			if key == 'q' || key == 'k' {
+				ticker.Stop()
+				return res.CurrentWorld, res.Turn
+			}
 		}
 	}
 }
@@ -89,17 +97,19 @@ func sendAliveCellsCount(client *rpc.Client, c distributorChannels) {
 	c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
 }
 
-func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune) {
+func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
 	switch key {
 	case 's':
 		saveCurrentState(client, p, c)
 	case 'q', 'k':
-		quitOrShutdownGame(p, c, client, key)
+		return quitOrShutdownGame(p, c, client, key)
 	case 'p':
 		pauseGame(p, c, client)
 	default:
 		fmt.Println("Invalid key")
 	}
+
+	return nil
 }
 
 func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
@@ -113,7 +123,7 @@ func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
 	writeImage(p, c, response.Turn, response.CurrentWorld)
 }
 
-func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) {
+func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
 	keyRequest := stubs.KeyRequest{Key: string('q')}
 	keyResponse := new(stubs.CurrentStateResponse)
 	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
@@ -123,12 +133,13 @@ func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key
 	}
 	writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
 	c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
-	close(c.events)
+	// close(c.events)
 
 	if key == 'k' {
 		shutdownBrokerAndNodes(client)
 	}
-	os.Exit(0)
+
+	return keyResponse
 }
 
 func shutdownBrokerAndNodes(client *rpc.Client) {
@@ -140,22 +151,32 @@ func shutdownBrokerAndNodes(client *rpc.Client) {
 }
 
 func pauseGame(p Params, c distributorChannels, client *rpc.Client) {
-	togglePause(client)
-	c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
-	fmt.Println("Game paused")
+	// togglePause(client)
+	// c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
+	// fmt.Println("Game paused")
 
-	for {
-		if <-c.ioKeyPress == 'p' {
-			togglePause(client)
-			c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
-			fmt.Println("Game resumed")
-			break
-		}
+	// for {
+	// 	if <-c.ioKeyPress == 'p' {
+	// 		togglePause(client)
+	// 		c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
+	// 		fmt.Println("Game resumed")
+	// 		break
+	// 	}
+	// }
+	pauseFlag = !pauseFlag
+	if pauseFlag {
+		trun := togglePause(client)
+		c.events <- StateChange{CompletedTurns: trun, NewState: Paused}
+		fmt.Println("Game paused")
+	} else {
+		trun := togglePause(client)
+		c.events <- StateChange{CompletedTurns: trun, NewState: Executing}
+		fmt.Println("Game resumed")
 	}
 
 }
 
-func togglePause(client *rpc.Client) {
+func togglePause(client *rpc.Client) int {
 	request := stubs.KeyRequest{Key: "p"}
 	response := new(stubs.CurrentStateResponse)
 	err := client.Call(stubs.HandleKey, request, response)
@@ -163,6 +184,8 @@ func togglePause(client *rpc.Client) {
 		fmt.Printf("Error HandleKey -> %s\n", err.Error())
 		os.Exit(1)
 	}
+
+	return response.Turn
 }
 
 func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs.Response) error {
@@ -194,7 +217,9 @@ func distributor(p Params, c distributorChannels) {
 	}
 
 	listenOnPort("127.0.0.1:8082")
+
 	startGame(p, c)
+
 }
 
 func listenOnPort(addr string) {

@@ -15,6 +15,8 @@ import (
 
 type Broker struct {
 	nodeAddresses []string
+	pauseFlag     bool
+	quiteFlag     bool
 }
 
 var world [][]uint8
@@ -22,7 +24,8 @@ var mutex sync.Mutex
 var totalTurns int
 var turn int
 var shutdownFlag bool
-var pauseFlag bool
+
+// var pauseFlag bool
 
 func main() {
 	pAddr := flag.String("port", "127.0.0.1:8083", "Port to listen on")
@@ -61,6 +64,8 @@ func main() {
 func NewBroker(nodeAddresses []string) *Broker {
 	return &Broker{
 		nodeAddresses: nodeAddresses,
+		pauseFlag:     false,
+		quiteFlag:     false,
 	}
 }
 
@@ -87,6 +92,7 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 
 	channels := make([]chan [][]uint8, numNodes)
 	for turn = 0; turn < totalTurns; {
+
 		updatedWorld := b.distributeWork(numNodes, workerHeight, remaining, request, channels)
 
 		// Update the world state and notify distributor
@@ -95,7 +101,6 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 		world = updatedWorld
 		turn++
 		mutex.Unlock()
-
 		// Pause if needed
 		b.waitIfPaused()
 	}
@@ -175,6 +180,7 @@ func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStat
 			CurrentWorld: world,
 			Turn:         turn,
 		}
+		b.quiteFlag = true
 		responseChan := make(chan struct{})
 		go func() {
 			err := b.HandleBroker(stubs.Request{}, &stubs.Response{})
@@ -218,12 +224,12 @@ func (b *Broker) shutdownNodes() {
 
 // togglePause toggles the pause state.
 func (b *Broker) togglePause() {
-	pauseFlag = !pauseFlag
+	b.pauseFlag = !b.pauseFlag
 }
 
 // waitIfPaused waits if the broker is in paused state.
 func (b *Broker) waitIfPaused() {
-	for pauseFlag {
-		time.Sleep(100 * time.Millisecond)
+	for b.pauseFlag {
+		continue
 	}
 }
