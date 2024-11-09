@@ -218,13 +218,11 @@ func distributor(p Params, c distributorChannels) {
 		distributorRegistered = true
 	}
 
-	listenOnPort("127.0.0.1:8082")
-
-	startGame(p, c)
+	listenOnPortAndStartGame("127.0.0.1:8082", p, c)
 
 }
 
-func listenOnPort(addr string) {
+func listenOnPortAndStartGame(addr string, p Params, c distributorChannels) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		fmt.Printf("Error listening on %s: %v\n", addr, err)
@@ -234,4 +232,5 @@ func listenOnPort(addr string) {
 
 	fmt.Println("Distributor running on port:", addr)
 	go rpc.Accept(listener)
+	startGame(p, c)
 }

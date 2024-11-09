@@ -166,7 +166,7 @@ func (b *Broker) callNode(address string, height int, nodeWorld [][]uint8, out c
 
 // callDistributor sends the updated world state to the distributor.
 func (b *Broker) callDistributor(updatedWorld [][]uint8) {
-	client, err := rpc.Dial("tcp", "127.0.0.1:8020")
+	client, err := rpc.Dial("tcp", "127.0.0.1:8082")
 	if err != nil {
 		fmt.Println("Error connecting to distributor:", err)
 		return
