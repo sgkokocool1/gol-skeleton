@@ -2,235 +2,149 @@ package gol
 
 import (
 	"fmt"
-	"net"
 	"net/rpc"
-	"os"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/stubs"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-type distributorChannels struct {
-	events     chan<- Event
-	ioCommand  chan<- ioCommand
-	ioIdle     <-chan bool
-	ioFilename chan<- string
-	ioOutput   chan<- uint8
-	ioInput    <-chan uint8
-	ioKeyPress <-chan rune
+// DistributorChannels contains things that need for parallel calculation
+type DistributorChannels struct {
+	Events          chan<- Event //Events is what communicate with SDL
+	IoCommand       chan<- ioCommand
+	IoIdle          <-chan bool
+	IoFilename      chan<- string
+	AliveCellsCount chan<- []util.Cell
+	IoInput         <-chan uint8
+	IoOutput        chan<- uint8
+	CompletedTurns  int
+	KeyPresses      <-chan rune
 }
 
-var (
-	distributorRegistered bool
-	channels              distributorChannels
-	pauseFlag             bool
-)
+// Distributor imports read pgm file
+func Distributor(p Params, c DistributorChannels) {
 
-type Distributor struct{}
-
-func startGame(p Params, c distributorChannels) {
-	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
-	initialWorld := getImage(p, c, worldSlice)
-
-	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
-
-	finalWorld, turn := gameOfLifeController(p, c, initialWorld)
-
-	if turn == p.Turns {
-		aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
-		c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
-		writeImage(p, c, p.Turns, finalWorld)
-
-		// Ensure IO completion before exiting
-		c.ioCommand <- ioCheckIdle
-		<-c.ioIdle
-
-		c.events <- StateChange{p.Turns, Quitting}
-		close(c.events)
-	}
-}
-
-func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) ([][]uint8, int) {
-	defer func() {
-		pauseFlag = false
-	}()
-	ticker := time.NewTicker(2 * time.Second)
-	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
+	// establish rpc connection, need to use the public address from aws
+	client, _ := rpc.Dial("tcp", "127.0.0.1:8030")
 	defer client.Close()
 
-	request := stubs.Request{
-		World: initialWorld,
-		Params: stubs.Params{
-			Turns:       p.Turns,
-			Threads:     p.Threads,
+	ticker := time.NewTicker(2 * time.Second)
+
+	brokerQStatus := new(stubs.QStatus)
+	req := stubs.CommonMsg{Msg: "getting q status"}
+	client.Call("Broker.GetQStatus", req, brokerQStatus)
+	initialsent := stubs.BrokerRequest{}
+	turns := 0
+	world := initialisedWorld(0, 0)
+	qStatus := false
+
+	switch brokerQStatus.Status {
+	case true:
+		savedStatus := new(stubs.BrokerSaved)
+		req := stubs.CommonMsg{Msg: "getting broker status"}
+		client.Call("Broker.GetBrokerStatus", req, savedStatus)
+		turns = savedStatus.Turns
+		initialsent = stubs.BrokerRequest{
+			World:       savedStatus.World,
+			Threads:     savedStatus.Threads,
+			ImageWidth:  savedStatus.ImageWidth,
+			ImageHeight: savedStatus.ImageHeight,
+		}
+	case false:
+		turns = p.Turns
+		// variables that need all the time
+		world = InputWorldImage(p, c)
+		initialsent = stubs.BrokerRequest{
+			World:       world,
+			Threads:     1,
 			ImageWidth:  p.ImageWidth,
 			ImageHeight: p.ImageHeight,
-		},
+		}
+		msgIfWorldReceived := new(stubs.ResponseOnReceivedWorld)
+		client.Call("Broker.WorldReceived", initialsent, msgIfWorldReceived)
 	}
-	response := new(stubs.Response)
-	done := client.Go(stubs.BrokerHandler, request, response, nil)
 
-	for {
+	for turns > 0 {
+		localsent := stubs.Localsent{
+			Turns: turns,
+		}
+		BrokerReturn := new(stubs.BrokerReturn)
+		client.Call("Broker.Calculate", localsent, BrokerReturn)
+
+		remoteAliveCells := BrokerReturn.ChangedCells
+		for _, aCells := range remoteAliveCells {
+			c.Events <- CellFlipped{
+				CompletedTurns: c.CompletedTurns,
+				Cell:           util.Cell{X: aCells.X, Y: aCells.Y},
+			}
+		}
+
+		world = BrokerReturn.World
+
+		turns--
+		c.CompletedTurns = p.Turns - turns
+		c.Events <- TurnComplete{
+			CompletedTurns: c.CompletedTurns}
+
+		// different conditions
 		select {
-		case <-done.Done:
-			ticker.Stop()
-			return response.World, response.Turn
 		case <-ticker.C:
-			sendAliveCellsCount(client, c)
-		case key := <-c.ioKeyPress:
-			res := handleKeyPress(p, c, client, key)
-			if key == 'q' || key == 'k' {
-				ticker.Stop()
-				return res.CurrentWorld, res.Turn
+			c.Events <- AliveCellsCount{
+				CompletedTurns: c.CompletedTurns,
+				CellsCount:     len(CalculateAliveCells(p, world))}
+
+		case command := <-c.KeyPresses:
+			switch command {
+			case 's':
+				c.Events <- StateChange{c.CompletedTurns, Executing}
+				OutputWorldImage(c, p, world)
+			case 'q':
+				brokerreply := new(stubs.CommonMsg)
+				sentStr := stubs.CommonMsg{Msg: "request about change q status"}
+				client.Call("Broker.ModifyQStatus", sentStr, brokerreply)
+				c.Events <- StateChange{c.CompletedTurns, Quitting}
+				qStatus = true
+			case 'p':
+				c.Events <- StateChange{c.CompletedTurns, Paused}
+				OutputWorldImage(c, p, world)
+				pStatus := 0
+
+				for {
+					command := <-c.KeyPresses
+					switch command {
+					case 'p':
+						fmt.Println("Continuing")
+						c.Events <- StateChange{c.CompletedTurns, Executing}
+						c.Events <- TurnComplete{c.CompletedTurns}
+						pStatus = 1
+					}
+					if pStatus == 1 {
+						break
+					}
+				}
+			case 'k':
+				OutputWorldImage(c, p, world)
+				kQuitMsg := new(stubs.KQuitting)
+				kstatus := stubs.KStatus{
+					Status: true,
+				}
+				client.Call("Broker.QuittingBroker", kstatus, kQuitMsg)
 			}
+		default:
 		}
-	}
-}
-
-func sendAliveCellsCount(client *rpc.Client, c distributorChannels) {
-	request := stubs.BlankRequest{}
-	response := new(stubs.CurrentStateResponse)
-	err := client.Call(stubs.GetCurrentState, request, response)
-	if err != nil {
-		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
-		os.Exit(1)
-	}
-	c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
-}
-
-func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
-	switch key {
-	case 's':
-		saveCurrentState(client, p, c)
-	case 'q', 'k':
-		return quitOrShutdownGame(p, c, client, key)
-	case 'p':
-		pauseGame(p, c, client)
-	default:
-		fmt.Println("Invalid key")
-	}
-
-	return nil
-}
-
-func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
-	request := stubs.BlankRequest{}
-	response := new(stubs.CurrentStateResponse)
-	err := client.Call(stubs.GetCurrentState, request, response)
-	if err != nil {
-		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
-		os.Exit(1)
-	}
-	writeImage(p, c, response.Turn, response.CurrentWorld)
-}
-
-func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
-	keyRequest := stubs.KeyRequest{Key: string('q')}
-	keyResponse := new(stubs.CurrentStateResponse)
-	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
-	if err != nil {
-		fmt.Printf("Error HandleKey -> %s\n", err.Error())
-		os.Exit(1)
-	}
-	writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
-	c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
-	// close(c.events)
-
-	if key == 'k' {
-		shutdownBrokerAndNodes(client)
-	}
-
-	return keyResponse
-}
-
-func shutdownBrokerAndNodes(client *rpc.Client) {
-	shutDownRequest := stubs.KeyRequest{Key: "k"}
-	shutDownResponse := new(stubs.CurrentStateResponse)
-	done := client.Go(stubs.HandleKey, shutDownRequest, shutDownResponse, nil)
-	<-done.Done
-	time.Sleep(500 * time.Millisecond)
-}
-
-func pauseGame(p Params, c distributorChannels, client *rpc.Client) {
-	// togglePause(client)
-	// c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
-	// fmt.Println("Game paused")
-
-	// for {
-	// 	if <-c.ioKeyPress == 'p' {
-	// 		togglePause(client)
-	// 		c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
-	// 		fmt.Println("Game resumed")
-	// 		break
-	// 	}
-	// }
-	pauseFlag = !pauseFlag
-	if pauseFlag {
-		trun := togglePause(client)
-		c.events <- StateChange{CompletedTurns: trun, NewState: Paused}
-		fmt.Println("Game paused")
-	} else {
-		trun := togglePause(client)
-		c.events <- StateChange{CompletedTurns: trun, NewState: Executing}
-		fmt.Println("Game resumed")
-	}
-
-}
-
-func togglePause(client *rpc.Client) int {
-	request := stubs.KeyRequest{Key: "p"}
-	response := new(stubs.CurrentStateResponse)
-	err := client.Call(stubs.HandleKey, request, response)
-	if err != nil {
-		fmt.Printf("Error HandleKey -> %s\n", err.Error())
-		os.Exit(1)
-	}
-
-	return response.Turn
-}
-
-func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs.Response) error {
-	oldWorld := request.OldWorld
-	newWorld := request.NewWorld
-	turn := request.Turn
-
-	for i := range oldWorld {
-		for j := range oldWorld[i] {
-			if oldWorld[i][j] != newWorld[i][j] {
-				channels.events <- CellFlipped{CompletedTurns: turn, Cell: util.Cell{X: j, Y: i}}
-			}
+		// for quiting the programme: q
+		if qStatus == true {
+			break
 		}
 	}
 
-	channels.events <- TurnComplete{CompletedTurns: turn}
-	return nil
-}
+	OutputWorldImage(c, p, world)
 
-func distributor(p Params, c distributorChannels) {
-	channels = c
+	c.IoCommand <- ioCheckIdle
+	<-c.IoIdle
 
-	if !distributorRegistered {
-		if err := rpc.Register(&Distributor{}); err != nil {
-			fmt.Println("Error registering distributor:", err)
-			return
-		}
-		distributorRegistered = true
-	}
-
-	listenOnPortAndStartGame("127.0.0.1:8082", p, c)
-
-}
-
-func listenOnPortAndStartGame(addr string, p Params, c distributorChannels) {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		fmt.Printf("Error listening on %s: %v\n", addr, err)
-		os.Exit(1)
-	}
-	defer listener.Close()
-
-	fmt.Println("Distributor running on port:", addr)
-	go rpc.Accept(listener)
-	startGame(p, c)
+	c.Events <- FinalTurnComplete{c.CompletedTurns, CalculateAliveCells(p, world)}
+	c.Events <- StateChange{c.CompletedTurns, Quitting}
+	close(c.Events)
 }

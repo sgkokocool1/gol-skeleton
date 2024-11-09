@@ -2,65 +2,64 @@ package gol
 
 import (
 	"strconv"
+	"strings"
 
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-// getAliveCells 提取世界中活细胞的坐标，返回一个 []util.Cell 切片
-func getAliveCells(world [][]uint8, width, height int) []util.Cell {
-	var cells []util.Cell
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			if world[y][x] == 255 {
-				cells = append(cells, util.Cell{X: x, Y: y})
+// initialisedWorld is used to make 2-D world
+func initialisedWorld(height, width int) [][]byte {
+	world := make([][]byte, height)
+	for i := range world {
+		world[i] = make([]byte, width)
+	}
+	return world
+}
+
+// InputWorldImage is related to loading images from the io channel
+func InputWorldImage(p Params, c DistributorChannels) [][]byte {
+	world := initialisedWorld(p.ImageHeight, p.ImageWidth)
+	c.IoCommand <- ioInput
+	c.IoFilename <- strings.Join([]string{strconv.Itoa(p.ImageWidth), strconv.Itoa(p.ImageHeight)}, "x")
+
+	//adding the values in ioInput channel to initialised world inside distributor
+	//flipped the initial alive cells
+	for y := 0; y < p.ImageHeight; y++ {
+		for x := 0; x < p.ImageWidth; x++ {
+			val := <-c.IoInput
+			world[y][x] = val
+			if val == alive {
+				c.Events <- CellFlipped{CompletedTurns: 0, Cell: struct{ X, Y int }{X: x, Y: y}}
 			}
 		}
 	}
-	return cells
-}
-
-func createWorld(height int, width int) [][]uint8 {
-	world := make([][]uint8, height)
-	for i := range world {
-		world[i] = make([]uint8, width)
-	}
 	return world
 }
 
-func writeImage(p Params, c distributorChannels, turn int, world [][]uint8) {
-	c.ioCommand <- 0
+// OutputWorldImage sends the world into the IoOutput channel
+func OutputWorldImage(c DistributorChannels, p Params, world [][]byte) {
+	c.IoCommand <- ioOutput
+	filename := strings.Join([]string{strconv.Itoa(p.ImageWidth), strconv.Itoa(p.ImageHeight), strconv.Itoa(c.CompletedTurns)}, "x")
+	c.IoFilename <- filename
 
-	w := strconv.Itoa(p.ImageWidth)
-	h := strconv.Itoa(p.ImageHeight)
-	t := strconv.Itoa(turn)
-	filename := w + "x" + h + "x" + t
-	c.ioFilename <- filename
-
-	for y := 0; y < p.ImageHeight; y++ {
-		for x := 0; x < p.ImageWidth; x++ {
-			c.ioOutput <- world[y][x]
+	for m := 0; m < p.ImageHeight; m++ {
+		for n := 0; n < p.ImageWidth; n++ {
+			c.IoOutput <- world[m][n]
 		}
 	}
-
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
-
-	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename}
+	c.Events <- ImageOutputComplete{c.CompletedTurns, filename}
 }
 
-func getImage(p Params, c distributorChannels, world [][]uint8) [][]uint8 {
-
-	c.ioCommand <- 1
-
-	w := strconv.Itoa(p.ImageWidth)
-	h := strconv.Itoa(p.ImageHeight)
-	c.ioFilename <- w + "x" + h
+// CalculateAliveCells the alive cells in current round
+func CalculateAliveCells(p Params, world [][]byte) []util.Cell {
+	var aliveCells []util.Cell
 
 	for y := 0; y < p.ImageHeight; y++ {
 		for x := 0; x < p.ImageWidth; x++ {
-			world[y][x] = <-c.ioInput
+			if world[y][x] == alive {
+				aliveCells = append(aliveCells, util.Cell{X: x, Y: y})
+			}
 		}
 	}
-
-	return world
+	return aliveCells
 }

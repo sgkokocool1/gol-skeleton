@@ -1,6 +1,13 @@
 package gol
 
-import "strings"
+import (
+	"strings"
+
+	"uk.ac.bris.cs/gameoflife/util"
+)
+
+const alive = 255
+const dead = 0
 
 // 定义一个新类型 StringSlice，用来实现对 []string 的处理
 type StringSlice []string
@@ -34,6 +41,8 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 	ioInput := make(chan uint8, p.ImageHeight*p.ImageWidth)
 	ioCommand := make(chan ioCommand)
 	ioIdle := make(chan bool)
+	aliveCellsCount := make(chan []util.Cell)
+	completedTurns := 0
 
 	ioChannels := ioChannels{
 		command:  ioCommand,
@@ -45,14 +54,16 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 
 	go startIo(p, ioChannels)
 
-	distributorChannels := distributorChannels{
-		events:     events,
-		ioCommand:  ioCommand,
-		ioIdle:     ioIdle,
-		ioFilename: ioFilename,
-		ioOutput:   ioOutput,
-		ioInput:    ioInput,
-		ioKeyPress: keyPresses,
+	distributorChannels := DistributorChannels{
+		events,
+		ioCommand,
+		ioIdle,
+		ioFilename,
+		aliveCellsCount,
+		ioInput,
+		ioOutput,
+		completedTurns,
+		keyPresses,
 	}
-	distributor(p, distributorChannels)
+	go Distributor(p, distributorChannels)
 }
