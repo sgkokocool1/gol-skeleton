@@ -34,6 +34,7 @@ func startGame(p Params, c distributorChannels) {
 	initialWorld := getImage(p, c, worldSlice)
 
 	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
+	c.events <- StateChange{0, Executing}
 
 	finalWorld, turn := gameOfLifeController(p, c, initialWorld)
 
@@ -122,18 +123,30 @@ func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
 		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
 		os.Exit(1)
 	}
-	writeImage(p, c, response.Turn, response.CurrentWorld)
+	fmt.Println("ssssssssssssssssssssave")
+	if response.Turn == 0 {
+		writeImage(p, c, 0, createWorld(p.ImageHeight, p.ImageWidth))
+	} else {
+		writeImage(p, c, response.Turn, response.CurrentWorld)
+	}
+
 }
 
 func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
-	keyRequest := stubs.KeyRequest{Key: string('q')}
+	keyRequest := stubs.KeyRequest{Key: "q"}
 	keyResponse := new(stubs.CurrentStateResponse)
 	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
 	if err != nil {
 		fmt.Printf("Error HandleKey -> %s\n", err.Error())
 		os.Exit(1)
 	}
-	writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
+	fmt.Println("qqqqqqqqqqqqqqqqqqsave")
+	if keyResponse.Turn == 0 {
+		writeImage(p, c, 0, createWorld(p.ImageHeight, p.ImageWidth))
+	} else {
+		writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
+	}
+
 	c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
 	// close(c.events)
 

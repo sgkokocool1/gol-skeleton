@@ -17,13 +17,15 @@ type Broker struct {
 	nodeAddresses []string
 	pauseFlag     bool
 	quiteFlag     bool
+	shutdownFlag  bool
 }
 
 var world [][]uint8
 var mutex sync.Mutex
 var totalTurns int
-var turn int
-var shutdownFlag bool
+var turn int = 0
+
+// var shutdownFlag bool
 
 // var pauseFlag bool
 
@@ -33,8 +35,9 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	broker := NewBroker([]string{
-		"127.0.0.1:8085",
-		//"127.0.0.1:8086",
+		// "34.227.14.229:8085",
+		// "44.202.164.89:808",
+		"8.130.81.92:8085",
 	})
 
 	// Register the broker
@@ -66,6 +69,7 @@ func NewBroker(nodeAddresses []string) *Broker {
 		nodeAddresses: nodeAddresses,
 		pauseFlag:     false,
 		quiteFlag:     false,
+		shutdownFlag:  false,
 	}
 }
 
@@ -73,7 +77,7 @@ func (b *Broker) shutdownWatcher() {
 	for {
 		time.Sleep(100 * time.Millisecond)
 		mutex.Lock()
-		if shutdownFlag {
+		if b.shutdownFlag {
 			mutex.Unlock()
 			fmt.Println("Shutting down the broker...")
 			os.Exit(0)
@@ -88,6 +92,7 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 		b.quiteFlag = false
 		b.pauseFlag = false
 		turn = 0
+		world = request.World
 	}()
 	world = request.World
 	totalTurns = request.Params.Turns
@@ -97,6 +102,11 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 
 	channels := make([]chan [][]uint8, numNodes)
 	for turn = 0; turn < totalTurns; {
+		// if b.quiteFlag {
+		// 	time.Sleep(500 * time.Millisecond)
+		// 	//b.pauseFlag = false
+		// 	return nil
+		// }
 
 		updatedWorld := b.distributeWork(numNodes, workerHeight, remaining, request, channels)
 
@@ -107,15 +117,10 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 		turn++
 		mutex.Unlock()
 
-		if b.quiteFlag {
-			time.Sleep(500 * time.Millisecond)
-			//b.pauseFlag = false
-			break
-		}
-
 		// Pause if needed
-		b.waitIfPaused()
-
+		for b.pauseFlag {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	response.Turn = turn
@@ -190,11 +195,9 @@ func (b *Broker) GetCurrentState(request stubs.Request, response *stubs.CurrentS
 func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStateResponse) error {
 	switch request.Key {
 	case "q":
-		*response = stubs.CurrentStateResponse{
-			CurrentWorld: world,
-			Turn:         turn,
-		}
-		b.quiteFlag = true
+		mutex.Lock()
+		defer mutex.Unlock()
+		//	b.quiteFlag = true
 		responseChan := make(chan struct{})
 		go func() {
 			err := b.HandleBroker(stubs.Request{}, &stubs.Response{})
@@ -204,6 +207,10 @@ func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStat
 			responseChan <- struct{}{}
 		}()
 		<-responseChan
+		*response = stubs.CurrentStateResponse{
+			CurrentWorld: world,
+			Turn:         turn,
+		}
 	case "k":
 		b.shutdownNodes()
 	case "p":
@@ -218,7 +225,7 @@ func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStat
 func (b *Broker) shutdown() {
 	mutex.Lock()
 	defer mutex.Unlock()
-	shutdownFlag = true
+	b.shutdownFlag = true
 }
 
 // shutdownNodes sends shutdown requests to all nodes.
@@ -238,12 +245,7 @@ func (b *Broker) shutdownNodes() {
 
 // togglePause toggles the pause state.
 func (b *Broker) togglePause() {
+	mutex.Lock()
+	defer mutex.Unlock()
 	b.pauseFlag = !b.pauseFlag
-}
-
-// waitIfPaused waits if the broker is in paused state.
-func (b *Broker) waitIfPaused() {
-	for b.pauseFlag {
-		continue
-	}
 }

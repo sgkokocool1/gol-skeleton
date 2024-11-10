@@ -25,6 +25,7 @@ func testKeyboardP(t *testing.T) {
 		ImageHeight: 512,
 	}
 
+	emptyOutFolder()
 	keyPresses := make(chan rune, 10)
 	events := make(chan gol.Event, 1000)
 
@@ -49,6 +50,7 @@ func testKeyboardP(t *testing.T) {
 	tester := MakeTester(t, params, keyPresses, events, golDone)
 
 	go func() {
+		tester.TestStartsExecuting()
 		turn := tester.TestPauses()
 
 		tester.TestNoStateChange(5 * time.Second)
@@ -59,7 +61,7 @@ func testKeyboardP(t *testing.T) {
 		keyPresses <- 'p'
 
 		tester.TestExecutes(turn)
-
+		keyPresses <- 'q'
 		tester.Stop(false)
 	}()
 
@@ -74,6 +76,7 @@ func testKeyboardS(t *testing.T) {
 		ImageHeight: 512,
 	}
 
+	emptyOutFolder()
 	keyPresses := make(chan rune, 10)
 	events := make(chan gol.Event, 1000)
 
@@ -87,6 +90,7 @@ func testKeyboardS(t *testing.T) {
 	tester := MakeTester(t, params, keyPresses, events, golDone)
 
 	go func() {
+		tester.TestStartsExecuting()
 		time.Sleep(500 * time.Millisecond)
 		keyPresses <- 's'
 		tester.TestOutput()
@@ -106,6 +110,7 @@ func testKeyboardQ(t *testing.T) {
 		ImageHeight: 512,
 	}
 
+	emptyOutFolder()
 	keyPresses := make(chan rune, 10)
 	events := make(chan gol.Event, 1000)
 
@@ -119,6 +124,7 @@ func testKeyboardQ(t *testing.T) {
 	tester := MakeTester(t, params, keyPresses, events, golDone)
 
 	go func() {
+		tester.TestStartsExecuting()
 		time.Sleep(500 * time.Millisecond)
 
 		keyPresses <- 'q'
@@ -138,6 +144,7 @@ func testKeyboardPS(t *testing.T) {
 		ImageHeight: 512,
 	}
 
+	emptyOutFolder()
 	keyPresses := make(chan rune, 10)
 	events := make(chan gol.Event, 1000)
 
@@ -151,6 +158,7 @@ func testKeyboardPS(t *testing.T) {
 	tester := MakeTester(t, params, keyPresses, events, golDone)
 
 	go func() {
+		tester.TestStartsExecuting()
 		time.Sleep(500 * time.Millisecond)
 
 		keyPresses <- 'p'
@@ -175,6 +183,7 @@ func testKeyboardPQ(t *testing.T) {
 		ImageHeight: 512,
 	}
 
+	emptyOutFolder()
 	keyPresses := make(chan rune, 10)
 	events := make(chan gol.Event, 1000)
 
@@ -188,6 +197,7 @@ func testKeyboardPQ(t *testing.T) {
 	tester := MakeTester(t, params, keyPresses, events, golDone)
 
 	go func() {
+		tester.TestStartsExecuting()
 		time.Sleep(500 * time.Millisecond)
 
 		keyPresses <- 'p'

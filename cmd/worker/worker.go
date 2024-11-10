@@ -14,7 +14,7 @@ type Worker struct{}
 
 func main() {
 	// Set up the worker to listen on a specified port
-	pAddr := flag.String("port", "127.0.0.1:8085", "IP and port to listen on")
+	pAddr := flag.String("port", "0.0.0.0:8085", "IP and port to listen on")
 	flag.Parse()
 
 	worker := &Worker{}
