@@ -9,6 +9,23 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+// 该模块主要负责：
+
+// 	1.	将游戏状态写入 PGM 图像文件（writePgmImage()）。
+// 	2.	从 PGM 图像文件读取数据并初始化游戏状态（readPgmImage()）。
+// 	3.	响应控制命令，如读取、写入图像，检查是否处于空闲状态。
+// •	类型定义：通道结构、命令类型。
+// •	写入 PGM 图像的函数。
+// •	读取 PGM 图像的函数。
+// •	启动 I/O goroutine 的入口函数。
+
+// ioChannels 是 I/O 操作的通道结构，用于在 I/O 模块与主程序之间通信：
+
+// 	•	command：接收要执行的 I/O 操作命令。
+// 	•	idle：通知主程序 I/O goroutine 是否空闲。
+// 	•	filename：传递文件名用于读取或写入。
+// 	•	output：传递图像数据用于写入文件。
+// 	•	input：传递从文件读取的图像数据。
 type ioChannels struct {
 	command <-chan ioCommand
 	idle    chan<- bool
@@ -39,6 +56,10 @@ const (
 )
 
 // writePgmImage receives an array of bytes and writes it to a pgm file.
+// •	创建 out 目录以存储输出文件。
+// •	接收文件名并创建 .pgm 文件。
+// •	写入 PGM 文件的头部（格式 P5，宽度、高度、灰度最大值）。
+// •	通过从 output 通道接收像素数据，逐行写入文件。
 func (io *ioState) writePgmImage() {
 	_ = os.Mkdir("out", os.ModePerm)
 
@@ -87,6 +108,9 @@ func (io *ioState) writePgmImage() {
 }
 
 // readPgmImage opens a pgm file and sends its data as an array of bytes.
+// •	从 filename 通道获取文件名，读取 PGM 文件内容。
+// •	检查 PGM 文件头的合法性。
+// •	将文件中的像素数据通过 input 通道发送出去。
 func (io *ioState) readPgmImage() {
 	fmt.Println("start read pgm file")
 	// Request a filename from the distributor.
@@ -125,6 +149,11 @@ func (io *ioState) readPgmImage() {
 }
 
 // startIo should be the entrypoint of the io goroutine.
+// •	初始化 ioState 实例。
+// •	监听 command 通道，执行相应的操作：
+// •	ioInput：读取 PGM 文件。
+// •	ioOutput：写入 PGM 文件。
+// •	ioCheckIdle：向 idle 通道发送 true，表示当前 goroutine 处于空闲状态。
 func startIo(p Params, c ioChannels) {
 	io := ioState{
 		params:   p,

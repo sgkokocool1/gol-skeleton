@@ -27,6 +27,7 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 		input:    ioInput,
 	}
 
+	// 启动io协程
 	go startIo(p, ioChannels)
 
 	distributorChannels := distributorChannels{

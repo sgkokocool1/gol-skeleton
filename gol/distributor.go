@@ -7,6 +7,11 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
+// 1.	初始化游戏世界。
+// 2.	多线程并行计算世界的下一个状态。
+// 3.	处理用户输入控制（暂停、保存、退出）。
+// 4.	输出游戏状态到文件。
+
 type distributorChannels struct {
 	events     chan<- Event
 	ioCommand  chan<- ioCommand
@@ -16,30 +21,11 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
-// distributor divides the work between workers and interacts with other goroutines.
-// func distributor(p Params, c distributorChannels) {
-
-// 	// TODO: Create a 2D slice to store the world.
-
-// 	turn := 0
-// 	c.events <- StateChange{turn, Executing}
-
-// 	// TODO: Execute all turns of the Game of Life.
-
-// 	// TODO: Report the final state using FinalTurnCompleteEvent.
-
-// 	// Make sure that the Io has finished any output before exiting.
-// 	c.ioCommand <- ioCheckIdle
-// 	<-c.ioIdle
-
-// 	c.events <- StateChange{turn, Quitting}
-
-// 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
-// 	close(c.events)
-// }
-// distributor divides the work between workers and interacts with other goroutines.
-// distributor divides the work between workers and interacts with other goroutines.
-
+//从文件读取初始世界状态。
+// •	根据图像的宽高生成文件名。
+// •	通过 ioCommand 和 ioFilename 请求 I/O goroutine 从文件读取数据。
+// •	从 ioInput 通道逐行接收数据，填充到二维切片 world 中。
+// •	返回初始化后的世界数据。
 func initializeWorld(p Params, c distributorChannels) [][]uint8 {
 	filename := fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
 	c.ioCommand <- ioInput
@@ -57,6 +43,10 @@ func initializeWorld(p Params, c distributorChannels) [][]uint8 {
 	return world
 }
 
+//并行计算局部区域的细胞状态更新。
+// •	并行处理某个区块（startY 到 endY）的细胞状态。
+// •	计算每个细胞周围的活邻居数。
+// •	根据规则决定细胞的生死变化，并向 events 通道报告细胞状态变化。
 func computeSection(startY, endY int, world [][]uint8, newWorld [][]uint8, width, height int, wg *sync.WaitGroup, c distributorChannels, turn int) {
 	defer wg.Done()
 	for y := startY; y < endY; y++ {
@@ -79,6 +69,7 @@ func computeSection(startY, endY int, world [][]uint8, newWorld [][]uint8, width
 	}
 }
 
+//将当前世界状态保存到文件。
 func writeNewWorld(world [][]uint8, turn int, p Params, c distributorChannels) {
 	filename := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
 	c.ioCommand <- ioOutput
@@ -96,12 +87,14 @@ func writeNewWorld(world [][]uint8, turn int, p Params, c distributorChannels) {
 	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: filename}
 }
 
+//核心调度器，控制游戏逻辑循环、线程调度和 I/O 操作。
 func distributor(p Params, c distributorChannels, keyPresses <-chan rune) {
 	// 创建一个 2D 切片来存储当前状态的世界
 	world := initializeWorld(p, c)
 	turn := 0
 	paused := false // 表示当前是否处于暂停状态
 
+	//初始化游戏最开始的状态，发送刷新sdl页面事件，是得窗口显示存活和死亡细胞
 	c.events <- CellsFlipped{CompletedTurns: turn, Cells: getAliveCells(world, p.ImageWidth, p.ImageHeight)}
 	c.events <- StateChange{turn, Executing}
 	// writeNewWorld(world, turn, p, c)
@@ -113,11 +106,13 @@ turnLoop:
 		select {
 		case key := <-keyPresses:
 			if key == 's' {
+				//按下s，收到s请求，保存当前的状态
 				fmt.Printf("sssssssssssssssss,turn: %d\n", turn)
-
 				writeNewWorld(world, turn, p, c)
 			}
 			if key == 'p' {
+				//按下p，如果当前状态是正常状态则暂停，如果当前状态为暂停则恢复正常状态
+				// 暂停或者恢复发送改变状态事件
 				fmt.Printf("pppppppppppppppp,turn: %d\n", turn)
 				paused = !paused
 				if paused {
@@ -127,6 +122,7 @@ turnLoop:
 				}
 			}
 			if key == 'q' {
+				// 按下q，则退出循环，退出游戏
 				fmt.Printf("qqqqqqqqqqqqqq,turn: %d\n", turn)
 				break turnLoop
 			}
@@ -138,6 +134,7 @@ turnLoop:
 
 			turn++
 			// 执行多线程并行计算
+			// 使用 sync.WaitGroup 和 goroutines 并行处理不同的世界区域。
 			var wg sync.WaitGroup
 			newWorld := make([][]uint8, p.ImageHeight)
 			for i := range newWorld {
@@ -145,6 +142,7 @@ turnLoop:
 			}
 
 			// 分块并发处理
+			// 每个线程处理一块高度
 			rowsPerThread := p.ImageHeight / p.Threads
 			for t := 0; t < p.Threads; t++ {
 				startY := t * rowsPerThread
@@ -162,6 +160,7 @@ turnLoop:
 			// newWorld := computeNewWorld(world, turn, p, c)
 			// writeNewWorld(newWorld, turn, p, c)
 			// 每个回合结束后发送 `AliveCellsCount` 事件
+			// 发送回合结束事件 TurnComplete 和活细胞计数事件 AliveCellsCount。
 			aliveCells := countAliveCells(newWorld, p.ImageWidth, p.ImageHeight)
 			c.events <- AliveCellsCount{CompletedTurns: turn, CellsCount: aliveCells}
 			c.events <- TurnComplete{turn}
@@ -169,6 +168,7 @@ turnLoop:
 		}
 	}
 
+	// 所有回合结束，写入最终状态
 	writeNewWorld(world, turn, p, c)
 	// 获取所有活细胞的坐标并转换为 []util.Cell
 	aliveCells := getAliveCells(world, p.ImageWidth, p.ImageHeight)
@@ -202,6 +202,10 @@ func getAliveCells(world [][]uint8, width, height int) []util.Cell {
 // countAliveNeighbors 计算指定单元格周围的活邻居数量
 func countAliveNeighbors(world [][]uint8, x, y, width, height int) int {
 	alive := 0
+	// 所有neighbor数组，依次是
+	// 左上，上，右上
+	// 左， 右
+	// 左下，下，右下
 	neighbors := [][2]int{
 		{-1, -1}, {-1, 0}, {-1, 1},
 		{0, -1}, {0, 1},
