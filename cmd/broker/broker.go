@@ -29,6 +29,11 @@ var turn int = 0
 
 // var pauseFlag bool
 
+// •	初始化：Broker 会监听 127.0.0.1:8083 端口，并注册 RPC 服务。
+// •	节点列表：通过 NewBroker 初始化节点地址列表。
+// •	RPC 注册：将 Broker 注册为 RPC 服务对象。
+// •	监听端口：使用 net.Listen 启动 TCP 监听。
+// •	Broker 关闭监控：shutdownWatcher 协程会在 shutdownFlag 置为 true 时关闭 Broker。
 func main() {
 	pAddr := flag.String("port", "127.0.0.1:8083", "Port to listen on")
 	flag.Parse()
@@ -87,6 +92,10 @@ func (b *Broker) shutdownWatcher() {
 }
 
 // HandleBroker distributes the world update workload among nodes and manages their responses.
+// •	初始化：接收来自 Distributor 的请求，初始化世界和游戏参数。
+// •	分发任务：通过 distributeWork 方法，将计算任务分发给多个节点。
+// •	同步结果：收集节点的计算结果，并将更新的世界状态发送回 Distributor。
+// •	暂停逻辑：如果 pauseFlag 为 true，则游戏暂停。
 func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) error {
 	defer func() {
 		b.quiteFlag = false
@@ -94,35 +103,38 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 		turn = 0
 		world = request.World
 	}()
+
+	// 请求初始化世界
 	world = request.World
 	totalTurns = request.Params.Turns
+
+	// 根据节点数量把初始世界分成n个片段，每个worker处理一个片段
 	numNodes := len(b.nodeAddresses)
 	workerHeight := len(world) / numNodes
 	remaining := len(world) % numNodes
 
 	channels := make([]chan [][]uint8, numNodes)
 	for turn = 0; turn < totalTurns; {
-		// if b.quiteFlag {
-		// 	time.Sleep(500 * time.Millisecond)
-		// 	//b.pauseFlag = false
-		// 	return nil
-		// }
 
+		// 每个轮次，多个节点计算每个节点的状态
 		updatedWorld := b.distributeWork(numNodes, workerHeight, remaining, request, channels)
 
 		// Update the world state and notify distributor
 		mutex.Lock()
+		// 想controller节点发送目前世界的状态，刷新sdl页面
 		b.callDistributor(updatedWorld)
 		world = updatedWorld
 		turn++
 		mutex.Unlock()
 
 		// Pause if needed
+		// 按下p，暂停轮次
 		for b.pauseFlag {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
 
+	// 最后返回最终状态
 	response.Turn = turn
 	response.Status = "OK"
 	response.World = world
@@ -130,6 +142,7 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 }
 
 // distributeWork distributes the workload to worker nodes.
+// 根据worker的数量，把世界分成多个状态
 func (b *Broker) distributeWork(numNodes, workerHeight, remaining int, request stubs.Request, channels []chan [][]uint8) [][]uint8 {
 	updatedWorld := make([][]uint8, 0)
 	for i := 0; i < numNodes; i++ {
@@ -138,10 +151,12 @@ func (b *Broker) distributeWork(numNodes, workerHeight, remaining int, request s
 		endY := ((i + 1) * workerHeight) + remaining
 		nodeWorld := GetImagePart(request.Params, startY, endY, world)
 
+		// 调度给worker节点计算每个节点状态
 		go b.callNode(b.nodeAddresses[i], endY-startY, nodeWorld, channels[i])
 	}
 
 	// Gather results from channels
+	// 最后整和每个节点状态为整个世界状态
 	for i := 0; i < numNodes; i++ {
 		receivedData := <-channels[i]
 		updatedWorld = append(updatedWorld, receivedData...)
@@ -170,6 +185,7 @@ func (b *Broker) callNode(address string, height int, nodeWorld [][]uint8, out c
 }
 
 // callDistributor sends the updated world state to the distributor.
+//  向controller节点发送请求刷新当前世界状态
 func (b *Broker) callDistributor(updatedWorld [][]uint8) {
 	client, err := rpc.Dial("tcp", "127.0.0.1:8082")
 	if err != nil {
@@ -192,6 +208,9 @@ func (b *Broker) GetCurrentState(request stubs.Request, response *stubs.CurrentS
 }
 
 // HandleKey processes keyboard commands for broker control.
+// •	‘q’ 键：终止当前游戏，并返回世界的最新状态。
+// •	‘k’ 键：关闭所有节点。
+// •	‘p’ 键：暂停或恢复游戏。
 func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStateResponse) error {
 	switch request.Key {
 	case "q":
