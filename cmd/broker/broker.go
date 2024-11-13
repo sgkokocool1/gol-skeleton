@@ -13,62 +13,61 @@ import (
 	"uk.ac.bris.cs/gameoflife/stubs"
 )
 
+// Broker 结构体，负责管理节点列表和控制游戏的暂停、退出和关闭等标志。
 type Broker struct {
-	nodeAddresses []string
-	pauseFlag     bool
-	quiteFlag     bool
-	shutdownFlag  bool
+	nodeAddresses []string // 节点地址列表
+	pauseFlag     bool     // 暂停标志
+	quiteFlag     bool     // 静默模式标志（未完全实现）
+	shutdownFlag  bool     // 关闭标志
 }
 
-var world [][]uint8
-var mutex sync.Mutex
-var totalTurns int
-var turn int = 0
+// 全局变量，存储世界状态、互斥锁以及游戏回合数。
+var world [][]uint8  // 世界状态，表示生命游戏的当前状态
+var mutex sync.Mutex // 互斥锁，确保并发访问共享资源时的安全
+var totalTurns int   // 总回合数
+var turn int = 0     // 当前回合数
 
-// var shutdownFlag bool
-
-// var pauseFlag bool
-
+// main 函数，启动 Broker，监听传入的 RPC 请求，并处理关闭逻辑。
 // •	初始化：Broker 会监听 127.0.0.1:8083 端口，并注册 RPC 服务。
 // •	节点列表：通过 NewBroker 初始化节点地址列表。
 // •	RPC 注册：将 Broker 注册为 RPC 服务对象。
 // •	监听端口：使用 net.Listen 启动 TCP 监听。
 // •	Broker 关闭监控：shutdownWatcher 协程会在 shutdownFlag 置为 true 时关闭 Broker。
 func main() {
-	pAddr := flag.String("port", "127.0.0.1:8083", "Port to listen on")
+	pAddr := flag.String("port", "127.0.0.1:8083", "Port to listen on") // 设置监听的端口，默认为 127.0.0.1:8083
 	flag.Parse()
-	rand.Seed(time.Now().UnixNano())
+	rand.Seed(time.Now().UnixNano()) // 用当前时间戳初始化随机数生成器
 
+	// 初始化 Broker，传入节点地址列表
 	broker := NewBroker([]string{
-		// "34.227.14.229:8085",
-		// "44.202.164.89:808",
-		"8.130.81.92:8085",
+		"8.130.81.92:8085", // 示例节点地址
 	})
 
-	// Register the broker
+	// 注册 Broker 为 RPC 服务对象
 	err := rpc.Register(broker)
 	if err != nil {
-		fmt.Println("Error registering broker:", err)
+		fmt.Println("注册 Broker 出错:", err)
 		return
 	}
 
+	// 开始监听端口，等待传入的 RPC 请求
 	listener, err := net.Listen("tcp", *pAddr)
 	if err != nil {
-		fmt.Println("Error starting listener:", err)
+		fmt.Println("启动监听出错:", err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Println("Broker running on port:", *pAddr)
+	fmt.Println("Broker 在端口", *pAddr, "运行")
 
-	// Handle broker shutdown in a separate goroutine
+	// 启动一个 goroutine 来监听 shutdown 标志，判断是否需要关闭 Broker
 	go broker.shutdownWatcher()
 
-	// Start accepting RPC calls
+	// 接受 RPC 请求
 	rpc.Accept(listener)
 }
 
-// NewBroker creates and initializes a new Broker instance.
+// NewBroker 初始化并返回一个新的 Broker 实例，接收节点地址列表作为参数。
 func NewBroker(nodeAddresses []string) *Broker {
 	return &Broker{
 		nodeAddresses: nodeAddresses,
@@ -78,19 +77,21 @@ func NewBroker(nodeAddresses []string) *Broker {
 	}
 }
 
+// shutdownWatcher 持续检查 shutdownFlag 标志，若为 true，则退出程序并关闭 Broker。
 func (b *Broker) shutdownWatcher() {
 	for {
-		time.Sleep(100 * time.Millisecond)
-		mutex.Lock()
+		time.Sleep(100 * time.Millisecond) // 每 100 毫秒检查一次
+		mutex.Lock()                       // 锁定互斥锁，安全访问共享变量
 		if b.shutdownFlag {
 			mutex.Unlock()
-			fmt.Println("Shutting down the broker...")
-			os.Exit(0)
+			fmt.Println("Broker 正在关闭...")
+			os.Exit(0) // 如果标志为 true，则退出程序
 		}
 		mutex.Unlock()
 	}
 }
 
+// HandleBroker 是主 RPC 方法，用于处理世界状态更新和任务分发给节点。
 // HandleBroker distributes the world update workload among nodes and manages their responses.
 // •	初始化：接收来自 Distributor 的请求，初始化世界和游戏参数。
 // •	分发任务：通过 distributeWork 方法，将计算任务分发给多个节点。
@@ -101,46 +102,46 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 		b.quiteFlag = false
 		b.pauseFlag = false
 		turn = 0
-		world = request.World
+		world = request.World // 从请求中初始化世界状态
 	}()
 
-	// 请求初始化世界
+	// 初始化世界状态和总回合数
 	world = request.World
 	totalTurns = request.Params.Turns
 
-	// 根据节点数量把初始世界分成n个片段，每个worker处理一个片段
+	// 将世界状态分割成多个部分，每个节点处理一个部分
 	numNodes := len(b.nodeAddresses)
 	workerHeight := len(world) / numNodes
 	remaining := len(world) % numNodes
 
+	// 创建通道用于与各个节点的通信
 	channels := make([]chan [][]uint8, numNodes)
 	for turn = 0; turn < totalTurns; {
 
-		// 每个轮次，多个节点计算每个节点的状态
+		// 将工作分发给各个节点进行计算
 		updatedWorld := b.distributeWork(numNodes, workerHeight, remaining, request, channels)
 
-		// Update the world state and notify distributor
+		// 更新世界状态，并通知 distributor
 		mutex.Lock()
-		// 想controller节点发送目前世界的状态，刷新sdl页面
-		b.callDistributor(updatedWorld)
+		b.callDistributor(updatedWorld) // 发送更新后的世界状态给 distributor
 		world = updatedWorld
 		turn++
 		mutex.Unlock()
 
-		// Pause if needed
-		// 按下p，暂停轮次
+		// 如果暂停标志为 true，暂停游戏
 		for b.pauseFlag {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond) // 暂停时，每 100 毫秒检查一次
 		}
 	}
 
-	// 最后返回最终状态
+	// 返回游戏结束后的最终世界状态
 	response.Turn = turn
 	response.Status = "OK"
 	response.World = world
 	return nil
 }
 
+// distributeWork 将世界状态分成多个部分，分发给不同的节点进行处理。
 // distributeWork distributes the workload to worker nodes.
 // 根据worker的数量，把世界分成多个状态
 // •	b *Broker：这是一个方法，属于 Broker 类型的结构体。
@@ -151,26 +152,26 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 // •	channels []chan [][]uint8：用于与各个 worker 节点通信的通道数组。
 // •	返回值为 [][]uint8，表示经过所有 worker 节点处理后的完整世界状态。
 func (b *Broker) distributeWork(numNodes, workerHeight, remaining int, request stubs.Request, channels []chan [][]uint8) [][]uint8 {
-	updatedWorld := make([][]uint8, 0)
+	updatedWorld := make([][]uint8, 0) // 存储更新后的世界状态
 	for i := 0; i < numNodes; i++ {
-		channels[i] = make(chan [][]uint8)
+		channels[i] = make(chan [][]uint8) // 为每个节点创建一个通道
 		startY := i * workerHeight
 		endY := ((i + 1) * workerHeight) + remaining
-		nodeWorld := GetImagePart(request.Params, startY, endY, world)
+		nodeWorld := GetImagePart(request.Params, startY, endY, world) // 获取每个节点需要处理的世界部分
 
-		// 调度给worker节点计算每个节点状态
+		// 将任务分发给工作节点
 		go b.callNode(b.nodeAddresses[i], endY-startY, nodeWorld, channels[i])
 	}
 
-	// Gather results from channels
-	// 最后整和每个节点状态为整个世界状态
+	// 收集所有节点的结果，并将其合并成完整的世界状态
 	for i := 0; i < numNodes; i++ {
-		receivedData := <-channels[i]
-		updatedWorld = append(updatedWorld, receivedData...)
+		receivedData := <-channels[i]                        // 从每个节点接收处理结果
+		updatedWorld = append(updatedWorld, receivedData...) // 合并结果
 	}
 	return updatedWorld
 }
 
+// callNode 向工作节点发送请求，并收集其返回的更新后的世界状态。
 // callNode handles the RPC call to a node and collects the result.
 // •	b *Broker：方法属于 Broker 结构体。
 // •	address string：worker 节点的 IP 地址和端口。
@@ -178,43 +179,39 @@ func (b *Broker) distributeWork(numNodes, workerHeight, remaining int, request s
 // •	nodeWorld [][]uint8：发送给 worker 节点的部分世界数据（二维数组）。
 // •	out chan [][]uint8：用于发送处理后的结果的通道。
 func (b *Broker) callNode(address string, height int, nodeWorld [][]uint8, out chan [][]uint8) {
-	client, err := rpc.Dial("tcp", address)
+	client, err := rpc.Dial("tcp", address) // 与工作节点建立 RPC 连接
 	if err != nil {
-		fmt.Println("Error connecting to node:", address, "Details:", err)
+		fmt.Println("连接工作节点出错:", address, "详细信息:", err)
 		return
 	}
 	defer client.Close()
 
-	request := stubs.Request{World: nodeWorld}
-	response := new(stubs.Response)
-	err = client.Call(stubs.HandleWorker, request, response)
+	request := stubs.Request{World: nodeWorld}               // 创建请求，包含该节点需要处理的世界部分
+	response := new(stubs.Response)                          // 响应结构体
+	err = client.Call(stubs.HandleWorker, request, response) // 调用节点的 RPC 方法进行计算
 	if err != nil {
-		fmt.Println("Error calling node:", address, "Details:", err)
+		fmt.Println("调用工作节点出错:", address, "详细信息:", err)
 		return
 	}
 
+	// 将处理后的世界部分发送回 Broker
 	out <- response.World[1 : height+1]
 }
 
+// callDistributor 向 distributor 发送更新后的世界状态，用于刷新显示。
 // callDistributor sends the updated world state to the distributor.
 //  向controller节点发送请求刷新当前世界状态
 // •	b *Broker：方法属于 Broker 类型。
 // •	updatedWorld [][]uint8：更新后的 Game of Life 世界的二维数组（即包含所有细胞的状态）。
 func (b *Broker) callDistributor(updatedWorld [][]uint8) {
-	// •	rpc.Dial("tcp", "127.0.0.1:8082")：
-	// •	通过 TCP 协议连接到本地的 distributor 节点，地址为 127.0.0.1:8082。
-	// •	distributor 通常监听在这个端口，用于接收 Broker 的 RPC 请求。
-	// •	err != nil：
-	// •	如果连接失败，打印错误信息（如连接被拒绝、端口不可用等），然后立即返回。
-	// •	defer client.Close()：
-	// •	确保在函数结束时关闭 RPC 客户端连接，无论函数是正常结束还是遇到错误。
-	client, err := rpc.Dial("tcp", "127.0.0.1:8082")
+	client, err := rpc.Dial("tcp", "127.0.0.1:8082") // 与 distributor 建立 RPC 连接
 	if err != nil {
-		fmt.Println("Error connecting to distributor:", err)
+		fmt.Println("连接到 distributor 出错:", err)
 		return
 	}
 	defer client.Close()
 
+	// 向 distributor 发送更新后的世界状态
 	// •	client.Call()：通过 RPC 调用 distributor 的 HandleFlipCells 方法，传递世界状态的更新信息。
 	// •	stubs.HandleFlipCells：distributor 节点的 RPC 方法名称，用于处理细胞状态的翻转。
 	// •	请求参数：
@@ -227,35 +224,27 @@ func (b *Broker) callDistributor(updatedWorld [][]uint8) {
 	client.Call(stubs.HandleFlipCells, stubs.FlipRequest{OldWorld: world, NewWorld: updatedWorld, Turn: turn}, &stubs.Response{})
 }
 
-// GetCurrentState provides the current world state and count of alive cells.
-// •	b *Broker：方法属于 Broker 类型的接收者方法。
-// •	request stubs.Request：请求参数，虽然没有在该函数内部使用，通常作为 RPC 请求的占位符。
-// •	response *stubs.CurrentStateResponse：指向 stubs.CurrentStateResponse 结构体的指针，用于存储返回的响应数据。
-// •	error：返回类型是 error，表示如果函数执行过程中出现错误，可以通过返回非空的 error 值来通知调用方。
+// GetCurrentState 获取当前世界状态和存活细胞数量。
 func (b *Broker) GetCurrentState(request stubs.Request, response *stubs.CurrentStateResponse) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 	response.CurrentWorld = world
-	response.AliveCellsCount = CountAliveCells(world)
+	response.AliveCellsCount = CountAliveCells(world) // 计算存活的细胞数量
 	response.Turn = turn
 	return nil
 }
 
-// HandleKey processes keyboard commands for broker control.
-// •	‘q’ 键：终止当前游戏，并返回世界的最新状态。
-// •	‘k’ 键：关闭所有节点。
-// •	‘p’ 键：暂停或恢复游戏。
+// HandleKey 处理用户输入的控制命令（例如暂停、退出、关闭节点）。
 func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStateResponse) error {
 	switch request.Key {
-	case "q":
+	case "q": // 退出游戏
 		mutex.Lock()
 		defer mutex.Unlock()
-		//	b.quiteFlag = true
 		responseChan := make(chan struct{})
 		go func() {
 			err := b.HandleBroker(stubs.Request{}, &stubs.Response{})
 			if err != nil {
-				fmt.Println("Error calling distributor: ", err)
+				fmt.Println("调用 distributor 出错: ", err)
 			}
 			responseChan <- struct{}{}
 		}()
@@ -264,9 +253,9 @@ func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStat
 			CurrentWorld: world,
 			Turn:         turn,
 		}
-	case "k":
+	case "k": // 关闭所有节点
 		b.shutdownNodes()
-	case "p":
+	case "p": // 暂停或恢复游戏
 		b.togglePause()
 		response.CurrentWorld = world
 		response.Turn = turn
@@ -274,19 +263,19 @@ func (b *Broker) HandleKey(request stubs.KeyRequest, response *stubs.CurrentStat
 	return nil
 }
 
-// shutdown sets the shutdown flag to true, triggering broker shutdown.
+// shutdown 设置 shutdownFlag 为 true，触发 Broker 关闭。
 func (b *Broker) shutdown() {
 	mutex.Lock()
 	defer mutex.Unlock()
 	b.shutdownFlag = true
 }
 
-// shutdownNodes sends shutdown requests to all nodes.
+// shutdownNodes 向所有节点发送关闭请求。
 func (b *Broker) shutdownNodes() {
 	for _, address := range b.nodeAddresses {
 		client, err := rpc.Dial("tcp", address)
 		if err != nil {
-			fmt.Println("Error connecting to node:", address, "Details:", err)
+			fmt.Println("连接到节点出错:", address, "详细信息:", err)
 			continue
 		}
 		done := client.Go(stubs.CloseNode, stubs.BlankRequest{}, &stubs.Response{}, nil)
@@ -296,7 +285,7 @@ func (b *Broker) shutdownNodes() {
 	b.shutdown()
 }
 
-// togglePause toggles the pause state.
+// togglePause 切换暂停标志，控制游戏暂停或恢复。
 func (b *Broker) togglePause() {
 	mutex.Lock()
 	defer mutex.Unlock()

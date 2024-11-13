@@ -11,16 +11,14 @@ import (
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
-// •	startGame: 初始化游戏世界，并控制游戏的启动和终止。
-// •	gameOfLifeController: 游戏的核心控制逻辑，包括轮询远程计算节点的结果、处理用户输入、以及暂停和恢复游戏。
-// •	sendAliveCellsCount: 定期请求节点报告当前活细胞的数量。
-// •	handleKeyPress: 处理用户输入，包括保存、暂停、退出等操作。
-// •	saveCurrentState: 保存当前的世界状态到文件。
-// •	pauseGame 和 togglePause: 控制游戏的暂停和恢复。
-// •	HandleFlipCells: 用于处理来自远程节点的细胞翻转事件。
-// •	distributor: 分发器的入口，注册 RPC 服务并监听端口。
-// •	listenOnPortAndStartGame: 启动 RPC 服务并监听来自计算节点的请求。
-
+// distributorChannels 结构体定义了与分发器相关的通道，用于与其他模块之间的通信。
+// •	events：用于发送游戏事件的通道。
+// •	ioCommand：用于发送I/O命令的通道。
+// •	ioIdle：用于接收I/O闲置状态的通道。
+// •	ioFilename：用于发送文件名的通道。
+// •	ioOutput：用于发送I/O输出数据的通道。
+// •	ioInput：用于接收I/O输入数据的通道。
+// •	ioKeyPress：用于接收按键事件的通道。
 type distributorChannels struct {
 	events     chan<- Event
 	ioCommand  chan<- ioCommand
@@ -32,39 +30,39 @@ type distributorChannels struct {
 }
 
 var (
-	distributorRegistered bool
-	channels              distributorChannels
-	pauseFlag             bool
+	distributorRegistered bool                // 用于标记分发器是否已注册
+	channels              distributorChannels // 存储分发器通道
+	pauseFlag             bool                // 用于标记游戏是否暂停
 )
 
 type Distributor struct{}
 
-// •	功能：初始化游戏世界，启动游戏控制器，并在游戏结束时保存世界状态。
+// startGame 函数用于初始化游戏世界并启动游戏控制器。
 // •	流程：
-// 1.	初始化世界 initialWorld。
+// 1.	初始化游戏世界 initialWorld。
 // 2.	调用 gameOfLifeController 控制游戏逻辑。
-// 3.	游戏完成后，保存最终状态并通知 ioCommand 通道结束 I/O 操作。
+// 3.	游戏结束后，保存最终状态并通知 ioCommand 通道结束 I/O 操作。
 func startGame(p Params, c distributorChannels) {
-	// 初始化游戏世界，吃泡面和check/image下面读取初始文件
+	// 初始化游戏世界，读取初始世界图像
 	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
 	initialWorld := getImage(p, c, worldSlice)
 
-	// 发送细胞翻转事件，刷新sdl页面
+	// 发送细胞翻转事件，刷新图像显示
 	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
-	// 发送改变游戏状态时间，状态改为开始
+	// 发送游戏状态改变事件，状态改为开始
 	c.events <- StateChange{0, Executing}
 
-	// 处理游戏计算逻辑
+	// 处理游戏的计算逻辑
 	finalWorld, turn := gameOfLifeController(p, c, initialWorld)
 
-	// 游戏结束，如果正常结束则发送最后轮次的事件，统计存活细胞，写输出文件
-	// 如果轮次不是正常结束的轮次，测试按键k或者q退出，controller里面处理的当时退出的状态
+	// 游戏结束，发送最终的轮次事件，统计存活细胞，写输出文件
+	// 如果是正常结束轮次，保存游戏状态
 	if turn == p.Turns {
 		aliveCells := getAliveCells(finalWorld, p.ImageWidth, p.ImageHeight)
 		c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
 		writeImage(p, c, p.Turns, finalWorld)
 
-		// Ensure IO completion before exiting
+		// 确保I/O操作完成后退出
 		c.ioCommand <- ioCheckIdle
 		<-c.ioIdle
 
@@ -73,23 +71,22 @@ func startGame(p Params, c distributorChannels) {
 	}
 }
 
-// •	功能：控制游戏的生命周期，包括定时获取活细胞数量、处理用户输入、暂停/恢复等操作。
+// gameOfLifeController 函数用于控制游戏生命周期，处理远程节点的计算结果、用户输入、暂停/恢复等操作。
 // •	流程：
 // 1.	创建 RPC 客户端连接。
-// 2.	启动远程调用以计算 Game of Life 的下一步状态。
-// 3.	定时（每2秒）请求活细胞数量。
-// 4.	响应用户的按键操作（保存、暂停、退出等）。
-// 5.	游戏完成或用户退出时停止 ticker 并返回当前世界状态。
+// 2.	定时获取活细胞数量。
+// 3.	响应用户按键操作（保存、暂停、退出等）。
+// 4.	游戏完成或用户退出时停止计时器并返回当前世界状态。
 func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint8) ([][]uint8, int) {
 	defer func() {
-		// 退出时候，置默认暂停为false
+		// 退出时，将暂停标志置为 false
 		pauseFlag = false
 	}()
 
-	// 启动一个2s的定时器
+	// 启动一个2秒钟的定时器
 	ticker := time.NewTicker(2 * time.Second)
 
-	// 与broker建立连接
+	// 与计算节点建立RPC连接
 	client, _ := rpc.Dial("tcp", "127.0.0.1:8083")
 	defer client.Close()
 
@@ -103,23 +100,25 @@ func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint
 		},
 	}
 
-	// 向borker发送请求，处理游戏细胞状态
+	// 向计算节点发送请求，获取下一个状态
 	response := new(stubs.Response)
 	done := client.Go(stubs.BrokerHandler, request, response, nil)
 
+	// 游戏主循环
 	for {
 		select {
 		case <-done.Done:
-			// 收到broker返回，游戏执行完成，停止定时器，返回最终状态
+			// 收到计算节点的返回结果，游戏执行完成，停止定时器，返回最终状态
 			ticker.Stop()
 			return response.World, response.Turn
 		case <-ticker.C:
-			// 定时统计存活细胞数量
+			// 每2秒请求一次活细胞数量
 			sendAliveCellsCount(client, c)
 		case key := <-c.ioKeyPress:
 			// 处理按键事件
 			res := handleKeyPress(p, c, client, key)
 			if key == 'q' || key == 'k' {
+				// 按 'q' 或 'k' 退出游戏
 				ticker.Stop()
 				return res.CurrentWorld, res.Turn
 			}
@@ -127,7 +126,7 @@ func gameOfLifeController(p Params, c distributorChannels, initialWorld [][]uint
 	}
 }
 
-// 	•	功能：请求远程节点获取当前的活细胞数量，并将其发送到事件通道。
+// sendAliveCellsCount 函数请求远程计算节点获取当前的活细胞数量，并将其发送到事件通道。
 func sendAliveCellsCount(client *rpc.Client, c distributorChannels) {
 	request := stubs.BlankRequest{}
 	response := new(stubs.CurrentStateResponse)
@@ -139,95 +138,79 @@ func sendAliveCellsCount(client *rpc.Client, c distributorChannels) {
 	c.events <- AliveCellsCount{CompletedTurns: response.Turn, CellsCount: response.AliveCellsCount}
 }
 
-// •	功能：处理用户输入的按键。
-// •	操作：
+// handleKeyPress 函数处理用户输入的按键事件。
 // •	's'：保存当前世界状态。
 // •	'q' 或 'k'：退出或关闭整个系统。
 // •	'p'：暂停/恢复游戏。
 func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
 	switch key {
 	case 's':
+		// 按 's' 保存当前世界状态
 		saveCurrentState(client, p, c)
 	case 'q', 'k':
+		// 按 'q' 或 'k' 退出游戏
 		return quitOrShutdownGame(p, c, client, key)
 	case 'p':
+		// 按 'p' 暂停/恢复游戏
 		pauseGame(p, c, client)
 	default:
-		fmt.Println("Invalid key")
+		fmt.Println("无效的按键")
 	}
 
 	return nil
 }
 
-// •	's'：保存当前世界状态。
-// •	client：类型为 *rpc.Client，表示与远程 RPC 服务端的连接客户端。
-// •	c：类型为 distributorChannels，封装了多个通道，用于不同模块之间的通信。
-// •	这个函数的作用是通过 RPC 获取当前活细胞的数量，并将该信息传递给事件通道，以便进一步处理。
+// saveCurrentState 函数保存当前世界状态。
+// •	通过 RPC 获取当前活细胞的数量，并将该信息传递给事件通道。
 func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
-	// •	request：创建一个 BlankRequest 类型的请求对象。BlankRequest 通常是一个空的请求，用于调用不需要传递参数的 RPC 方法。
-	// •	response：创建一个指向 stubs.CurrentStateResponse 的指针作为响应对象，用于存储 RPC 调用返回的结果。
-	// •	CurrentStateResponse 可能包含当前回合数和活细胞数量等状态信息。
+	// 创建一个空请求对象
 	request := stubs.BlankRequest{}
 	response := new(stubs.CurrentStateResponse)
-	// •	使用 client.Call() 方法进行 RPC 调用：
-	// •	stubs.GetCurrentState：这是远程方法的名称，用于获取当前游戏状态（包括活细胞数量和已完成的回合数）。
-	// •	request：传递的请求参数（此处为 BlankRequest，表示无需参数）。
-	// •	response：用于接收远程方法的返回结果。
+	// 发起 RPC 调用，获取当前游戏状态
 	err := client.Call(stubs.GetCurrentState, request, response)
 	if err != nil {
 		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
 		os.Exit(1)
 	}
-	fmt.Println("ssssssssssssssssssssave")
+	fmt.Println("保存当前状态")
 	if response.Turn == 0 {
 		writeImage(p, c, 0, createWorld(p.ImageHeight, p.ImageWidth))
 	} else {
 		writeImage(p, c, response.Turn, response.CurrentWorld)
 	}
-
 }
 
-// 	•	'q' 或 'k'：退出或关闭整个系统。
-// •	p：类型为 Params，包含游戏的相关参数（如图像宽高、回合数等）。
-// •	c：类型为 distributorChannels，封装了多个通道，用于模块之间的通信。
-// •	client：类型为 *rpc.Client，表示与远程 RPC 服务端的连接客户端。
-// •	key：类型为 rune，表示键盘输入的字符（如 q 或 k）。
-// •	函数返回一个指向 stubs.CurrentStateResponse 的指针，包含当前游戏状态的信息。
-
+// quitOrShutdownGame 函数处理退出或关闭游戏的操作。
+// •	根据按键 ('q' 或 'k') 发送退出命令并保存当前世界状态。
 func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
-	// •	keyRequest：创建一个 KeyRequest 类型的请求对象，其中 Key 被设置为 "q"。这表示将通过 RPC 调用发送一个退出命令。
-	// •	keyResponse：创建一个指向 stubs.CurrentStateResponse 的指针作为响应对象，用于存储 RPC 调用返回的结果（例如当前回合数和世界状态）。
 	keyRequest := stubs.KeyRequest{Key: "q"}
 	keyResponse := new(stubs.CurrentStateResponse)
 
-	// •	使用 client.Call() 方法进行 RPC 调用：
-	// •	stubs.HandleKey：远程方法的名称，用于处理键输入（例如退出）。
-	// •	keyRequest：请求参数（包含按键 "q"）。
-	// •	keyResponse：用于接收远程方法的返回结果。
-	// •	err：如果 RPC 调用出错，则会返回一个 error 对象。
-	// •	如果发生错误，打印错误信息并调用 os.Exit(1) 终止程序。
+	// 发起 RPC 调用，退出游戏
 	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
 	if err != nil {
 		fmt.Printf("Error HandleKey -> %s\n", err.Error())
 		os.Exit(1)
 	}
-	fmt.Println("qqqqqqqqqqqqqqqqqqsave")
+	fmt.Println("退出游戏并保存状态")
 	if keyResponse.Turn == 0 {
 		writeImage(p, c, 0, createWorld(p.ImageHeight, p.ImageWidth))
 	} else {
 		writeImage(p, c, keyResponse.Turn, keyResponse.CurrentWorld)
 	}
 
+	// 通知状态更改
 	c.events <- StateChange{CompletedTurns: keyResponse.Turn, NewState: Quitting}
-	// close(c.events)
 
 	if key == 'k' {
+		// 按 'k' 关闭所有服务
 		shutdownBrokerAndNodes(client)
 	}
 
 	return keyResponse
 }
 
+// shutdownBrokerAndNodes 函数关闭 broker 和节点服务。
 func shutdownBrokerAndNodes(client *rpc.Client) {
 	shutDownRequest := stubs.KeyRequest{Key: "k"}
 	shutDownResponse := new(stubs.CurrentStateResponse)
@@ -236,19 +219,20 @@ func shutdownBrokerAndNodes(client *rpc.Client) {
 	time.Sleep(500 * time.Millisecond)
 }
 
-//	•	'p'：暂停/恢复游戏。
+// pauseGame 函数处理游戏的暂停和恢复。
 func pauseGame(p Params, c distributorChannels, client *rpc.Client) {
 	pauseFlag = !pauseFlag
 	if pauseFlag {
+		// 如果游戏处于暂停状态，则通知远程节点暂停
 		trun := togglePause(client)
 		c.events <- StateChange{CompletedTurns: trun, NewState: Paused}
 		fmt.Println("Game paused")
 	} else {
+		// 如果游戏恢复，则通知远程节点继续
 		trun := togglePause(client)
 		c.events <- StateChange{CompletedTurns: trun, NewState: Executing}
 		fmt.Println("Game resumed")
 	}
-
 }
 
 func togglePause(client *rpc.Client) int {

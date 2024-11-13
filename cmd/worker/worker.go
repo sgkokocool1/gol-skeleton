@@ -1,139 +1,167 @@
 package main
 
 import (
-	"flag"
-	"fmt"
-	"net"
-	"net/rpc"
-	"os"
+	"flag"    // 导入 flag 包，解析命令行参数
+	"fmt"     // 导入 fmt 包，用于格式化输出
+	"net"     // 导入 net 包，用于网络通信
+	"net/rpc" // 导入 rpc 包，用于实现远程过程调用
+	"os"      // 导入 os 包，用于操作系统级别的功能（如退出程序）
 
-	"uk.ac.bris.cs/gameoflife/stubs"
+	"uk.ac.bris.cs/gameoflife/stubs" // 导入 stubs 包，包含 RPC 请求和响应结构体
 )
 
+// Worker 类型用于表示工作节点，每个 Worker 会处理计算任务。
 type Worker struct{}
 
-// •	使用 flag 解析命令行参数，指定 Worker 节点的监听地址和端口。
-// 	•	创建一个 Worker 对象，并注册到 RPC 服务器。
-// 	•	使用 net.Listen 创建 TCP 监听器，监听传入的连接。
-// 	•	通过 listener.Accept() 接收连接并启动一个新的 goroutine 来处理每个连接，使用 rpc.ServeConn(conn) 处理 RPC 调用。
+// main 函数是程序的入口，执行以下步骤：
+// 1. 使用 flag 解析命令行参数，指定 Worker 节点的监听地址和端口。
+// 2. 创建一个 Worker 对象，并注册到 RPC 服务器。
+// 3. 使用 net.Listen 创建 TCP 监听器，监听传入的连接。
+// 4. 使用 listener.Accept() 接收连接并启动新的 goroutine 来处理每个连接，
+//    使用 rpc.ServeConn(conn) 处理 RPC 调用。
 func main() {
-	// Set up the worker to listen on a specified port
+	// 解析命令行参数，指定默认监听地址为 "0.0.0.0:8085"（即本机所有网卡的 8085 端口）
 	pAddr := flag.String("port", "0.0.0.0:8085", "IP and port to listen on")
-	flag.Parse()
+	flag.Parse() // 解析命令行参数
 
-	worker := &Worker{}
-	err := rpc.Register(worker)
+	worker := &Worker{}         // 创建一个 Worker 实例
+	err := rpc.Register(worker) // 注册 Worker 到 RPC 服务器
 	if err != nil {
 		fmt.Println("Error registering RPC server:", err)
 		return
 	}
 
+	// 使用 net.Listen 创建一个 TCP 监听器，监听指定的地址和端口
 	listener, err := net.Listen("tcp", *pAddr)
 	if err != nil {
 		fmt.Println("Error starting listener:", err)
 		return
 	}
-	defer listener.Close()
+	defer listener.Close() // 程序退出时关闭监听器
 
-	fmt.Println("Worker listening on " + *pAddr)
+	fmt.Println("Worker listening on " + *pAddr) // 输出监听地址
 
+	// 无限循环，等待并处理传入的连接
 	for {
-		conn, err := listener.Accept()
+		conn, err := listener.Accept() // 接受传入的连接
 		if err != nil {
 			fmt.Println("Error accepting connection:", err)
-			continue
+			continue // 出现错误时，继续接受下一个连接
 		}
-		go rpc.ServeConn(conn)
+		go rpc.ServeConn(conn) // 启动新的 goroutine 来处理该连接的 RPC 请求
 	}
 }
 
-// HandleNextState processes the world state and calculates the next state.
-// 处理下一个状态计算
-// 1.	func (w *Worker)：
-// •	这是一种方法定义，属于 Worker 类型。
-// •	Worker 是处理 Game of Life 计算的工作节点，用于并行计算多个世界状态。
-// 2.	HandleNextState(request stubs.Request, response *stubs.Response) error：
-// •	request stubs.Request：这是通过 RPC 传递的请求对象，包含要处理的当前世界状态。
-// •	response *stubs.Response：这是一个指向响应对象的指针，用于存储并返回计算结果。
-// •	error：方法的返回类型是 error，表示如果发生错误，会返回一个 error 对象，否则返回 nil。
+// HandleNextState 处理世界状态的计算，计算下一个状态。
+// 输入：
+//   - request stubs.Request：请求对象，包含当前世界状态。
+//   - response *stubs.Response：响应对象，用于返回计算结果。
+// 输出：
+//   - 返回 error，如果没有错误，返回 nil；如果有错误，返回错误信息。
+// 处理的步骤：
+// 1. 根据当前世界状态计算下一个状态。
+// 2. 将计算结果（下一个世界状态）设置到 response 中。
 func (w *Worker) HandleNextState(request stubs.Request, response *stubs.Response) error {
+	// 调用 calculateNextWorld 函数来计算下一个世界状态
 	nextWorld := calculateNextWorld(request.World)
+
+	// 设置响应状态为 "OK"
 	response.Status = "OK"
+	// 设置响应的世界状态为计算得到的下一个世界状态
 	response.World = nextWorld
-	return nil
+	return nil // 返回 nil，表示没有错误
 }
 
-// calculateNextWorld generates the next state of the world based on Conway's Game of Life rules.
-// •	计算当前世界状态的下一状态。
-// // 	•	对每个细胞，统计其周围活细胞的数量，并根据 Game of Life 的规则决定该细胞在下一状态是存活还是死亡。
-// •	func calculateNextWorld(currentWorld [][]uint8) [][]uint8：
-// •	这是函数的定义，calculateNextWorld 用于计算下一轮的游戏世界。
-// •	currentWorld：这是一个二维切片，表示当前世界的细胞状态。每个元素是 uint8 类型，表示每个细胞的状态（通常 255 表示活细胞，0 表示死细胞）。
-// •	返回值：返回一个新的二维切片（[][]uint8），表示更新后的世界状态。
+// calculateNextWorld 生成当前世界的下一个状态，基于康威的生命游戏规则。
+// 输入：
+//   - currentWorld [][]uint8：当前世界的二维切片，表示细胞的状态。
+// 输出：
+//   - [][]uint8：表示下一个世界状态的二维切片。
+// 处理步骤：
+// 1. 遍历当前世界中的每个细胞，计算每个细胞的邻居数量。
+// 2. 根据邻居数量应用生命游戏的规则，计算每个细胞的下一状态。
 func calculateNextWorld(currentWorld [][]uint8) [][]uint8 {
-	height := len(currentWorld)
-	width := len(currentWorld[0])
-	nextWorld := make([][]uint8, height)
+	height := len(currentWorld)          // 获取世界的行数
+	width := len(currentWorld[0])        // 获取世界的列数
+	nextWorld := make([][]uint8, height) // 创建一个新的二维切片，用于存储下一个世界的状态
 
-	for i := range currentWorld {
-		nextWorld[i] = make([]uint8, width)
-		for j := range currentWorld[i] {
-			// •	liveNeighbours := countLiveNeighbours(i, j, currentWorld)：
-			// •	调用 countLiveNeighbours 函数来计算当前细胞（位于行 i 和列 j 位置）周围活细胞的数量。
-			// •	这个函数会检查当前位置的 8 个邻居，返回一个整数，表示有多少邻居是活细胞。
+	for i := range currentWorld { // 遍历当前世界的每一行
+		nextWorld[i] = make([]uint8, width) // 为每一行分配列数
+		for j := range currentWorld[i] {    // 遍历每一行中的每个细胞
+			// 调用 countLiveNeighbours 函数来计算当前细胞周围活细胞的数量
 			liveNeighbours := countLiveNeighbours(i, j, currentWorld)
+			// 根据规则应用 applyRules 函数，计算当前细胞的下一个状态
 			nextWorld[i][j] = applyRules(currentWorld[i][j], liveNeighbours)
 		}
 	}
-	return nextWorld
+	return nextWorld // 返回计算后的下一个世界状态
 }
 
-// applyRules applies the Game of Life rules to determine the next state of a cell.
+// applyRules 根据生命游戏的规则，决定细胞的下一状态。
+// 输入：
+//   - cell uint8：当前细胞的状态（0 表示死亡，255 表示存活）
+//   - liveNeighbours int：当前细胞周围活细胞的数量。
+// 输出：
+//   - uint8：细胞的下一状态。
+// 处理步骤：
+// 1. 如果细胞当前是活的（255），并且周围活细胞少于 2 或多于 3，则该细胞死亡。
+// 2. 如果细胞当前是死的（0），并且周围有 3 个活细胞，则该细胞复活。
+// 3. 否则，细胞保持当前状态。
 func applyRules(cell uint8, liveNeighbours int) uint8 {
 	if cell == 255 && (liveNeighbours < 2 || liveNeighbours > 3) {
-		return 0 // Cell dies
+		return 0 // 细胞死亡
 	}
 	if cell == 0 && liveNeighbours == 3 {
-		return 255 // Cell becomes alive
+		return 255 // 细胞复活
 	}
-	return cell // No change
+	return cell // 细胞保持当前状态
 }
 
-// countLiveNeighbours counts the number of live neighbors around a specific cell.
+// countLiveNeighbours 计算指定细胞周围活细胞的数量。
+// 输入：
+//   - i int：细胞所在行的索引。
+//   - j int：细胞所在列的索引。
+//   - world [][]uint8：当前世界的二维切片，表示细胞的状态。
+// 输出：
+//   - int：周围活细胞的数量。
+// 处理步骤：
+// 1. 使用 8 个偏移量表示周围 8 个邻居的相对位置。
+// 2. 遍历这些邻居位置，检查每个邻居是否是活细胞（值为 255），并计算活细胞的数量。
+// 3. 使用模运算确保邻居索引不越界，保持环绕边界。
 func countLiveNeighbours(i, j int, world [][]uint8) int {
-	// •	定义了一个长度为 8 的二维数组 neighborOffsets，每个元素表示相对于当前细胞的邻居的坐标偏移量。
-	// •	这 8 个偏移量分别代表当前细胞周围 8 个方向（上左、上、上右、左、右、下左、下、下右）的邻居。
+	// 定义 8 个邻居的相对坐标偏移量
 	neighborOffsets := [8][2]int{
 		{-1, -1}, {-1, 0}, {-1, 1},
 		{0, -1}, {0, 1},
 		{1, -1}, {1, 0}, {1, 1},
 	}
-	// •	计算世界的高度（行数）和宽度（列数）。
-	// •	height 是 world 的行数，即二维切片的长度。
-	// •	width 是 world 的列数，即第一行的长度。
-	height := len(world)
-	width := len(world[0])
-	liveNeighbours := 0
+	height := len(world)   // 获取世界的行数
+	width := len(world[0]) // 获取世界的列数
+	liveNeighbours := 0    // 计数器，统计活细胞的数量
 
-	// •	遍历 neighborOffsets 中的每一个偏移量 offset。
-	// •	这里使用了 range 循环，offset 是一个长度为 2 的数组，表示某个邻居的相对位置。
+	// 遍历 8 个邻居的位置
 	for _, offset := range neighborOffsets {
-		// •	计算邻居在 world 中的实际坐标：
-		// •	ni 是邻居的行索引，nj 是列索引。
-		// •	(i + offset[0] + height) % height：这里使用了模运算确保索引在 0 到 height-1 的范围内。如果超出边界，会环绕到另一侧。
-		// •	(j + offset[1] + width) % width：同理，确保列索引在 0 到 width-1 的范围内，实现环绕。
+		// 计算邻居的实际坐标，并使用模运算确保索引不会越界
 		ni := (i + offset[0] + height) % height
 		nj := (j + offset[1] + width) % width
-		if world[ni][nj] == 255 {
-			liveNeighbours++
+		if world[ni][nj] == 255 { // 如果邻居是活细胞
+			liveNeighbours++ // 活细胞计数加 1
 		}
 	}
-	return liveNeighbours
+	return liveNeighbours // 返回活细胞数量
 }
 
-// CloseNode shuts down the worker node.
+// CloseNode 关闭当前工作节点，退出程序。
+// 输入：
+//   - request stubs.BlankRequest：空请求对象。
+//   - response *stubs.Response：响应对象。
+// 输出：
+//   - 返回 nil。
+// 处理步骤：
+// 1. 输出 "Closing node..."，表示节点正在关闭。
+// 2. 调用 os.Exit(0) 退出程序。
 func (w *Worker) CloseNode(request stubs.BlankRequest, response *stubs.Response) error {
-	fmt.Println("Closing node...")
-	os.Exit(0)
-	return nil
+	fmt.Println("Closing node...") // 输出关闭信息
+	os.Exit(0)                     // 退出程序
+	return nil                     // 返回 nil，表示操作成功
 }
