@@ -49,6 +49,13 @@ func main() {
 
 // HandleNextState processes the world state and calculates the next state.
 // 处理下一个状态计算
+// 1.	func (w *Worker)：
+// •	这是一种方法定义，属于 Worker 类型。
+// •	Worker 是处理 Game of Life 计算的工作节点，用于并行计算多个世界状态。
+// 2.	HandleNextState(request stubs.Request, response *stubs.Response) error：
+// •	request stubs.Request：这是通过 RPC 传递的请求对象，包含要处理的当前世界状态。
+// •	response *stubs.Response：这是一个指向响应对象的指针，用于存储并返回计算结果。
+// •	error：方法的返回类型是 error，表示如果发生错误，会返回一个 error 对象，否则返回 nil。
 func (w *Worker) HandleNextState(request stubs.Request, response *stubs.Response) error {
 	nextWorld := calculateNextWorld(request.World)
 	response.Status = "OK"
@@ -58,7 +65,11 @@ func (w *Worker) HandleNextState(request stubs.Request, response *stubs.Response
 
 // calculateNextWorld generates the next state of the world based on Conway's Game of Life rules.
 // •	计算当前世界状态的下一状态。
-// 	•	对每个细胞，统计其周围活细胞的数量，并根据 Game of Life 的规则决定该细胞在下一状态是存活还是死亡。
+// // 	•	对每个细胞，统计其周围活细胞的数量，并根据 Game of Life 的规则决定该细胞在下一状态是存活还是死亡。
+// •	func calculateNextWorld(currentWorld [][]uint8) [][]uint8：
+// •	这是函数的定义，calculateNextWorld 用于计算下一轮的游戏世界。
+// •	currentWorld：这是一个二维切片，表示当前世界的细胞状态。每个元素是 uint8 类型，表示每个细胞的状态（通常 255 表示活细胞，0 表示死细胞）。
+// •	返回值：返回一个新的二维切片（[][]uint8），表示更新后的世界状态。
 func calculateNextWorld(currentWorld [][]uint8) [][]uint8 {
 	height := len(currentWorld)
 	width := len(currentWorld[0])
@@ -67,6 +78,9 @@ func calculateNextWorld(currentWorld [][]uint8) [][]uint8 {
 	for i := range currentWorld {
 		nextWorld[i] = make([]uint8, width)
 		for j := range currentWorld[i] {
+			// •	liveNeighbours := countLiveNeighbours(i, j, currentWorld)：
+			// •	调用 countLiveNeighbours 函数来计算当前细胞（位于行 i 和列 j 位置）周围活细胞的数量。
+			// •	这个函数会检查当前位置的 8 个邻居，返回一个整数，表示有多少邻居是活细胞。
 			liveNeighbours := countLiveNeighbours(i, j, currentWorld)
 			nextWorld[i][j] = applyRules(currentWorld[i][j], liveNeighbours)
 		}

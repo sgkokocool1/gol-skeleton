@@ -45,12 +45,16 @@ type Distributor struct{}
 // 2.	调用 gameOfLifeController 控制游戏逻辑。
 // 3.	游戏完成后，保存最终状态并通知 ioCommand 通道结束 I/O 操作。
 func startGame(p Params, c distributorChannels) {
+	// 初始化游戏世界，吃泡面和check/image下面读取初始文件
 	worldSlice := createWorld(p.ImageHeight, p.ImageWidth)
 	initialWorld := getImage(p, c, worldSlice)
 
+	// 发送细胞翻转事件，刷新sdl页面
 	c.events <- CellsFlipped{CompletedTurns: 0, Cells: getAliveCells(initialWorld, p.ImageWidth, p.ImageHeight)}
+	// 发送改变游戏状态时间，状态改为开始
 	c.events <- StateChange{0, Executing}
 
+	// 处理游戏计算逻辑
 	finalWorld, turn := gameOfLifeController(p, c, initialWorld)
 
 	// 游戏结束，如果正常结束则发送最后轮次的事件，统计存活细胞，写输出文件
@@ -156,9 +160,19 @@ func handleKeyPress(p Params, c distributorChannels, client *rpc.Client, key run
 }
 
 // •	's'：保存当前世界状态。
+// •	client：类型为 *rpc.Client，表示与远程 RPC 服务端的连接客户端。
+// •	c：类型为 distributorChannels，封装了多个通道，用于不同模块之间的通信。
+// •	这个函数的作用是通过 RPC 获取当前活细胞的数量，并将该信息传递给事件通道，以便进一步处理。
 func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
+	// •	request：创建一个 BlankRequest 类型的请求对象。BlankRequest 通常是一个空的请求，用于调用不需要传递参数的 RPC 方法。
+	// •	response：创建一个指向 stubs.CurrentStateResponse 的指针作为响应对象，用于存储 RPC 调用返回的结果。
+	// •	CurrentStateResponse 可能包含当前回合数和活细胞数量等状态信息。
 	request := stubs.BlankRequest{}
 	response := new(stubs.CurrentStateResponse)
+	// •	使用 client.Call() 方法进行 RPC 调用：
+	// •	stubs.GetCurrentState：这是远程方法的名称，用于获取当前游戏状态（包括活细胞数量和已完成的回合数）。
+	// •	request：传递的请求参数（此处为 BlankRequest，表示无需参数）。
+	// •	response：用于接收远程方法的返回结果。
 	err := client.Call(stubs.GetCurrentState, request, response)
 	if err != nil {
 		fmt.Printf("Error GetCurrentState -> %s\n", err.Error())
@@ -174,9 +188,24 @@ func saveCurrentState(client *rpc.Client, p Params, c distributorChannels) {
 }
 
 // 	•	'q' 或 'k'：退出或关闭整个系统。
+// •	p：类型为 Params，包含游戏的相关参数（如图像宽高、回合数等）。
+// •	c：类型为 distributorChannels，封装了多个通道，用于模块之间的通信。
+// •	client：类型为 *rpc.Client，表示与远程 RPC 服务端的连接客户端。
+// •	key：类型为 rune，表示键盘输入的字符（如 q 或 k）。
+// •	函数返回一个指向 stubs.CurrentStateResponse 的指针，包含当前游戏状态的信息。
+
 func quitOrShutdownGame(p Params, c distributorChannels, client *rpc.Client, key rune) *stubs.CurrentStateResponse {
+	// •	keyRequest：创建一个 KeyRequest 类型的请求对象，其中 Key 被设置为 "q"。这表示将通过 RPC 调用发送一个退出命令。
+	// •	keyResponse：创建一个指向 stubs.CurrentStateResponse 的指针作为响应对象，用于存储 RPC 调用返回的结果（例如当前回合数和世界状态）。
 	keyRequest := stubs.KeyRequest{Key: "q"}
 	keyResponse := new(stubs.CurrentStateResponse)
+
+	// •	使用 client.Call() 方法进行 RPC 调用：
+	// •	stubs.HandleKey：远程方法的名称，用于处理键输入（例如退出）。
+	// •	keyRequest：请求参数（包含按键 "q"）。
+	// •	keyResponse：用于接收远程方法的返回结果。
+	// •	err：如果 RPC 调用出错，则会返回一个 error 对象。
+	// •	如果发生错误，打印错误信息并调用 os.Exit(1) 终止程序。
 	err := client.Call(stubs.HandleKey, keyRequest, keyResponse)
 	if err != nil {
 		fmt.Printf("Error HandleKey -> %s\n", err.Error())
@@ -209,18 +238,6 @@ func shutdownBrokerAndNodes(client *rpc.Client) {
 
 //	•	'p'：暂停/恢复游戏。
 func pauseGame(p Params, c distributorChannels, client *rpc.Client) {
-	// togglePause(client)
-	// c.events <- StateChange{CompletedTurns: p.Turns, NewState: Paused}
-	// fmt.Println("Game paused")
-
-	// for {
-	// 	if <-c.ioKeyPress == 'p' {
-	// 		togglePause(client)
-	// 		c.events <- StateChange{CompletedTurns: p.Turns, NewState: Executing}
-	// 		fmt.Println("Game resumed")
-	// 		break
-	// 	}
-	// }
 	pauseFlag = !pauseFlag
 	if pauseFlag {
 		trun := togglePause(client)
@@ -248,13 +265,27 @@ func togglePause(client *rpc.Client) int {
 
 // 处理远程计算节点返回的细胞翻转信息，并通知事件通道。
 // 收到细胞翻转事件，想sdl发送细胞翻转，刷新sdl页面
+// •	d *Distributor：接收者，表示该方法属于 Distributor 类型。
+// •	request stubs.FlipRequest：请求参数，包含旧世界（OldWorld）、新世界（NewWorld）以及当前回合数（Turn）。
+// •	response *stubs.Response：响应参数，用于传递处理结果。
+// •	返回值：返回一个 error，表示方法执行过程中是否出现错误。
 func (d *Distributor) HandleFlipCells(request stubs.FlipRequest, response *stubs.Response) error {
+	// •	oldWorld：旧的世界状态（即上一次迭代的状态）。
+	// •	newWorld：新的世界状态（即当前迭代后的状态）。
+	// •	turn：当前回合数，用于标识此次迭代。
 	oldWorld := request.OldWorld
 	newWorld := request.NewWorld
 	turn := request.Turn
 
 	for i := range oldWorld {
 		for j := range oldWorld[i] {
+			// •	条件判断：检查 oldWorld[i][j] 是否与 newWorld[i][j] 不同。
+			// •	如果不同，表示该细胞在新旧世界之间发生了翻转（例如，从活到死，或从死到活）。
+			// •	发送事件通知：
+			// •	构造一个 CellFlipped 类型的事件，包含以下信息：
+			// •	CompletedTurns：当前回合数。
+			// •	Cell：细胞的坐标（X: j, Y: i）。
+			// •	通过 channels.events 通道发送事件通知，以便其他模块（如 UI 界面或日志记录器）可以接收到并处理该事件。
 			if oldWorld[i][j] != newWorld[i][j] {
 				channels.events <- CellFlipped{CompletedTurns: turn, Cell: util.Cell{X: j, Y: i}}
 			}

@@ -143,6 +143,13 @@ func (b *Broker) HandleBroker(request stubs.Request, response *stubs.Response) e
 
 // distributeWork distributes the workload to worker nodes.
 // 根据worker的数量，把世界分成多个状态
+// •	b *Broker：这是一个方法，属于 Broker 类型的结构体。
+// •	numNodes int：worker 节点的数量。
+// •	workerHeight int：每个 worker 节点需要处理的世界的高度（行数）。
+// •	remaining int：多出来的行数，用于将无法整除的行分配给最后一个节点。
+// •	request stubs.Request：包含处理请求的参数（包括世界的状态和尺寸）。
+// •	channels []chan [][]uint8：用于与各个 worker 节点通信的通道数组。
+// •	返回值为 [][]uint8，表示经过所有 worker 节点处理后的完整世界状态。
 func (b *Broker) distributeWork(numNodes, workerHeight, remaining int, request stubs.Request, channels []chan [][]uint8) [][]uint8 {
 	updatedWorld := make([][]uint8, 0)
 	for i := 0; i < numNodes; i++ {
@@ -165,6 +172,11 @@ func (b *Broker) distributeWork(numNodes, workerHeight, remaining int, request s
 }
 
 // callNode handles the RPC call to a node and collects the result.
+// •	b *Broker：方法属于 Broker 结构体。
+// •	address string：worker 节点的 IP 地址和端口。
+// •	height int：该 worker 节点需要处理的世界的高度（行数）。
+// •	nodeWorld [][]uint8：发送给 worker 节点的部分世界数据（二维数组）。
+// •	out chan [][]uint8：用于发送处理后的结果的通道。
 func (b *Broker) callNode(address string, height int, nodeWorld [][]uint8, out chan [][]uint8) {
 	client, err := rpc.Dial("tcp", address)
 	if err != nil {
@@ -186,7 +198,16 @@ func (b *Broker) callNode(address string, height int, nodeWorld [][]uint8, out c
 
 // callDistributor sends the updated world state to the distributor.
 //  向controller节点发送请求刷新当前世界状态
+// •	b *Broker：方法属于 Broker 类型。
+// •	updatedWorld [][]uint8：更新后的 Game of Life 世界的二维数组（即包含所有细胞的状态）。
 func (b *Broker) callDistributor(updatedWorld [][]uint8) {
+	// •	rpc.Dial("tcp", "127.0.0.1:8082")：
+	// •	通过 TCP 协议连接到本地的 distributor 节点，地址为 127.0.0.1:8082。
+	// •	distributor 通常监听在这个端口，用于接收 Broker 的 RPC 请求。
+	// •	err != nil：
+	// •	如果连接失败，打印错误信息（如连接被拒绝、端口不可用等），然后立即返回。
+	// •	defer client.Close()：
+	// •	确保在函数结束时关闭 RPC 客户端连接，无论函数是正常结束还是遇到错误。
 	client, err := rpc.Dial("tcp", "127.0.0.1:8082")
 	if err != nil {
 		fmt.Println("Error connecting to distributor:", err)
@@ -194,10 +215,23 @@ func (b *Broker) callDistributor(updatedWorld [][]uint8) {
 	}
 	defer client.Close()
 
+	// •	client.Call()：通过 RPC 调用 distributor 的 HandleFlipCells 方法，传递世界状态的更新信息。
+	// •	stubs.HandleFlipCells：distributor 节点的 RPC 方法名称，用于处理细胞状态的翻转。
+	// •	请求参数：
+	// •	stubs.FlipRequest：请求结构体，包含以下字段：
+	// •	OldWorld：表示旧的细胞状态世界（world）。
+	// •	NewWorld：表示更新后的细胞状态世界（updatedWorld）。
+	// •	Turn：当前的回合数（turn）。
+	// •	响应参数：
+	// •	&stubs.Response{}：空的响应结构体，因为这里不关心 distributor 返回的数据，只需要通知 distributor。
 	client.Call(stubs.HandleFlipCells, stubs.FlipRequest{OldWorld: world, NewWorld: updatedWorld, Turn: turn}, &stubs.Response{})
 }
 
 // GetCurrentState provides the current world state and count of alive cells.
+// •	b *Broker：方法属于 Broker 类型的接收者方法。
+// •	request stubs.Request：请求参数，虽然没有在该函数内部使用，通常作为 RPC 请求的占位符。
+// •	response *stubs.CurrentStateResponse：指向 stubs.CurrentStateResponse 结构体的指针，用于存储返回的响应数据。
+// •	error：返回类型是 error，表示如果函数执行过程中出现错误，可以通过返回非空的 error 值来通知调用方。
 func (b *Broker) GetCurrentState(request stubs.Request, response *stubs.CurrentStateResponse) error {
 	mutex.Lock()
 	defer mutex.Unlock()
